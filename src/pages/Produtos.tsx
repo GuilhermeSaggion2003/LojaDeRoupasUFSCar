@@ -1,10 +1,10 @@
 import { useEffect } from 'react';
-import { StockView } from '../components/stock/stock-view';
+import { ProductsView } from '../components/products/products-view';
 
 export default function ProdutosPage() {
   useEffect(() => {
     document.title = 'Produtos | LojaDeRoupasUFSCar';
   }, []);
 
-  return <StockView />;
+  return <ProductsView />;
 }

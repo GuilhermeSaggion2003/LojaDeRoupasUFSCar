@@ -1,7 +1,6 @@
 import { useId, useMemo, useRef, useState } from 'react'
-import { Plus, ScanBarcode } from 'lucide-react'
+import { Plus, Search } from 'lucide-react'
 import { formatPrice, type Product } from '../../lib/products'
-import { barcodeFor } from '../../lib/sales'
 import { cn } from '../../lib/utils'
 
 function normalize(text: string) {
@@ -22,10 +21,8 @@ export function ProductSearch({ products, onAdd }: Props) {
     if (!trimmed) return []
     const q = normalize(trimmed)
     return products
-      .filter(
-        (p) =>
-          barcodeFor(p).includes(q) ||
-          normalize(`${p.name} ${p.size} ${p.color.name}`).includes(q),
+      .filter((p) =>
+        normalize(`${p.name} ${p.size} ${p.color.name}`).includes(q),
       )
       .slice(0, 6)
   }, [products, trimmed])
@@ -47,8 +44,7 @@ export function ProductSearch({ products, onAdd }: Props) {
       setActiveIndex((i) => Math.max(i - 1, 0))
     } else if (e.key === 'Enter') {
       e.preventDefault()
-      const exact = products.find((p) => barcodeFor(p) === trimmed)
-      const target = exact ?? results[activeIndex]
+      const target = results[activeIndex]
       if (target) add(target)
     } else if (e.key === 'Escape') {
       setQuery('')
@@ -60,10 +56,10 @@ export function ProductSearch({ products, onAdd }: Props) {
   return (
     <div className="relative">
       <label htmlFor={inputId} className="sr-only">
-        Buscar produto ou código de barras
+        Buscar produto
       </label>
       <div className="relative">
-        <ScanBarcode
+        <Search
           className="pointer-events-none absolute top-1/2 left-4 size-6 -translate-y-1/2 text-muted-foreground"
           aria-hidden="true"
         />
@@ -79,7 +75,7 @@ export function ProductSearch({ products, onAdd }: Props) {
           autoFocus
           autoComplete="off"
           enterKeyHint="search"
-          placeholder="Bipe o código ou digite o nome do produto"
+          placeholder="Digite o nome do produto..."
           value={query}
           onChange={(e) => {
             setQuery(e.target.value)
@@ -122,7 +118,7 @@ export function ProductSearch({ products, onAdd }: Props) {
                   {p.name}
                 </span>
                 <span className="truncate text-xs text-muted-foreground">
-                  {p.size} · {p.color.name} · {barcodeFor(p)} ·{' '}
+                  {p.size} · {p.color.name} ·{' '}
                   {p.stock === 0 ? 'Sem estoque' : `${p.stock} em estoque`}
                 </span>
               </span>

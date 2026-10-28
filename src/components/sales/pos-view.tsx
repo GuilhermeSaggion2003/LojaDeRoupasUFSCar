@@ -75,7 +75,7 @@ export function PosView() {
           Ponto de Venda
         </h1>
         <p className="text-sm text-muted-foreground">
-          Bipe o código de barras ou busque pelo nome para adicionar itens.
+          Busque pelo nome do produto para adicionar itens.
         </p>
       </header>
 

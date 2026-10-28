@@ -2,13 +2,12 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, Loader2, Lock, Mail } from 'lucide-react'
-import { Button } from './ui/button'
 import { cn } from '../lib/utils'
 
 type Errors = { email?: string; password?: string }
 
-const inputClass =
-  'h-12 w-full rounded-xl border border-input bg-background pl-11 pr-4 text-base text-foreground shadow-xs transition-colors placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30 focus-visible:outline-none aria-invalid:border-destructive aria-invalid:ring-destructive/20 dark:bg-input/20 md:text-sm'
+const inputBaseClass =
+  'h-12 w-full rounded-xl border border-slate-700/60 bg-[#0c1322] pl-11 pr-4 text-sm text-slate-100 placeholder:text-slate-500 transition-colors focus:border-[#fbb03b] focus:ring-2 focus:ring-[#fbb03b]/20 focus:outline-none'
 
 export function LoginForm() {
   const [showPassword, setShowPassword] = useState(false)
@@ -36,14 +35,14 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-5">
-      <div className="flex flex-col gap-2">
-        <label htmlFor="email" className="text-sm font-medium text-foreground">
+    <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor="email" className="text-sm font-medium text-slate-200">
           E-mail
         </label>
         <div className="relative">
           <Mail
-            className="pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2 text-muted-foreground"
+            className="pointer-events-none absolute top-1/2 left-3.5 size-[18px] -translate-y-1/2 text-slate-400"
             aria-hidden="true"
           />
           <input
@@ -55,34 +54,29 @@ export function LoginForm() {
             placeholder="voce@lojaufscar.com.br"
             aria-invalid={Boolean(errors.email)}
             aria-describedby={errors.email ? 'email-error' : undefined}
-            className={inputClass}
+            className={cn(
+              inputBaseClass,
+              errors.email && 'border-rose-500/80 focus:border-rose-500 focus:ring-rose-500/20',
+            )}
           />
         </div>
         {errors.email && (
-          <p id="email-error" className="text-sm text-destructive">
+          <p id="email-error" className="text-xs text-rose-400">
             {errors.email}
           </p>
         )}
       </div>
 
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <label
-            htmlFor="password"
-            className="text-sm font-medium text-foreground"
-          >
-            Senha
-          </label>
-          <a
-            href="#"
-            className="rounded-sm text-sm text-muted-foreground underline-offset-4 transition-colors hover:text-foreground hover:underline focus-visible:ring-3 focus-visible:ring-ring/30 focus-visible:outline-none"
-          >
-            Esqueci minha senha
-          </a>
-        </div>
+      <div className="flex flex-col gap-1.5">
+        <label
+          htmlFor="password"
+          className="text-sm font-medium text-slate-200"
+        >
+          Senha
+        </label>
         <div className="relative">
           <Lock
-            className="pointer-events-none absolute top-1/2 left-4 size-4 -translate-y-1/2 text-muted-foreground"
+            className="pointer-events-none absolute top-1/2 left-3.5 size-[18px] -translate-y-1/2 text-slate-400"
             aria-hidden="true"
           />
           <input
@@ -93,14 +87,18 @@ export function LoginForm() {
             placeholder="Digite sua senha"
             aria-invalid={Boolean(errors.password)}
             aria-describedby={errors.password ? 'password-error' : undefined}
-            className={cn(inputClass, 'pr-12')}
+            className={cn(
+              inputBaseClass,
+              'pr-11',
+              errors.password && 'border-rose-500/80 focus:border-rose-500 focus:ring-rose-500/20',
+            )}
           />
           <button
             type="button"
             onClick={() => setShowPassword((v) => !v)}
             aria-label={showPassword ? 'Ocultar senha' : 'Mostrar senha'}
             aria-pressed={showPassword}
-            className="absolute top-1/2 right-1.5 flex size-9 -translate-y-1/2 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/30 focus-visible:outline-none"
+            className="absolute top-1/2 right-3 flex size-7 -translate-y-1/2 items-center justify-center text-slate-400 transition-colors hover:text-slate-200"
           >
             {showPassword ? (
               <EyeOff className="size-4" aria-hidden="true" />
@@ -110,26 +108,26 @@ export function LoginForm() {
           </button>
         </div>
         {errors.password && (
-          <p id="password-error" className="text-sm text-destructive">
+          <p id="password-error" className="text-xs text-rose-400">
             {errors.password}
           </p>
         )}
       </div>
 
-      <Button
+      <button
         type="submit"
         disabled={loading}
-        className="mt-2 h-12 w-full rounded-xl text-base font-semibold shadow-md shadow-primary/20 hover:bg-primary/90"
+        className="mt-2 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#fbb03b] text-sm font-semibold text-slate-950 shadow-md shadow-amber-500/10 transition-all hover:bg-[#f59e0b] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
       >
         {loading ? (
           <>
-            <Loader2 className="size-5 animate-spin" aria-hidden="true" />
-            Entrando...
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            <span>Entrando...</span>
           </>
         ) : (
           'Entrar'
         )}
-      </Button>
+      </button>
     </form>
   )
 }
