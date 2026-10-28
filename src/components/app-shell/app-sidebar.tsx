@@ -1,12 +1,23 @@
- 
-
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { signOut } from 'firebase/auth'
+import { auth } from '../../firebase' // Confirme se o caminho para o firebase.ts está correto
 import { cn } from '../../lib/utils'
 import { BrandMark } from './brand-mark'
 import { LOGOUT_ITEM, NAV_ITEMS } from './nav-items'
 
 export function AppSidebar() {
   const { pathname } = useLocation()
+  const navigate = useNavigate()
+
+  const handleLogout = async (e: React.MouseEvent) => {
+    e.preventDefault()
+    try {
+      await signOut(auth) // Encerra a sessão no servidor da Google
+      navigate('/') // Redireciona para o login
+    } catch (error) {
+      console.error("Erro ao encerrar sessão:", error)
+    }
+  }
 
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-sidebar-border bg-sidebar md:flex">
@@ -19,12 +30,13 @@ export function AppSidebar() {
           Menu
         </p>
         {NAV_ITEMS.map((item) => {
-          const active = pathname.startsWith(item.href)
+          // Fallback seguro caso algum item não tenha href (embora os NAV_ITEMS tenham)
+          const active = pathname.startsWith(item.href || '')
           const Icon = item.icon
           return (
             <Link
-              key={item.href}
-              to={item.href}
+              key={item.label}
+              to={item.href || '/'}
               aria-current={active ? 'page' : undefined}
               className={cn(
                 'flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium transition-colors',
@@ -50,13 +62,16 @@ export function AppSidebar() {
             <p className="text-xs text-muted-foreground">Gerente</p>
           </div>
         </div>
-        <Link
-          to={LOGOUT_ITEM.href}
-          className="flex h-10 items-center gap-3 rounded-lg px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+        
+        {/* Substituímos o <Link> por um <button> que executa o handleLogout */}
+        <button
+          type="button"
+          onClick={handleLogout}
+          className="flex h-10 w-full items-center gap-3 rounded-lg px-3 text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
         >
           <LOGOUT_ITEM.icon className="size-4" aria-hidden="true" />
           {LOGOUT_ITEM.label}
-        </Link>
+        </button>
       </div>
     </aside>
   )

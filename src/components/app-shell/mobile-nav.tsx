@@ -1,4 +1,6 @@
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { signOut } from 'firebase/auth'
+import { auth } from '../../firebase' // Confirme se o caminho para o firebase.ts está correto
 import { cn } from '../../lib/utils'
 import { BrandMark } from './brand-mark'
 import { LOGOUT_ITEM, NAV_ITEMS } from './nav-items'
@@ -19,7 +21,19 @@ export function MobileHeader() {
 
 export function MobileBottomNav() {
   const { pathname } = useLocation()
+  const navigate = useNavigate()
   const items = [...NAV_ITEMS, LOGOUT_ITEM]
+
+  // Função que destrói a sessão no Firebase
+  const handleLogout = async (e: React.MouseEvent) => {
+    e.preventDefault()
+    try {
+      await signOut(auth)
+      navigate('/')
+    } catch (error) {
+      console.error("Erro ao encerrar sessão:", error)
+    }
+  }
 
   return (
     <nav
@@ -28,28 +42,48 @@ export function MobileBottomNav() {
     >
       <ul className="grid grid-cols-4">
         {items.map((item) => {
-          const active = item !== LOGOUT_ITEM && pathname.startsWith(item.href)
+          const isLogout = item === LOGOUT_ITEM
+          const active = !isLogout && pathname.startsWith(item.href || '')
           const Icon = item.icon
-          return (
-            <li key={item.label}>
-              <Link
-                to={item.href}
-                aria-current={active ? 'page' : undefined}
+
+          // Classes base para manter o visual idêntico no botão e no link
+          const baseClasses = cn(
+            'flex h-16 w-full flex-col items-center justify-center gap-1 text-xs font-medium transition-colors',
+            active ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
+          )
+
+          // O conteúdo visual (ícone e texto) que vai dentro do botão ou do link
+          const innerContent = (
+            <>
+              <span
                 className={cn(
-                  'flex h-16 flex-col items-center justify-center gap-1 text-xs font-medium transition-colors',
-                  active ? 'text-primary' : 'text-muted-foreground hover:text-foreground',
+                  'flex h-7 w-12 items-center justify-center rounded-full transition-colors',
+                  active && 'bg-primary/12',
                 )}
               >
-                <span
-                  className={cn(
-                    'flex h-7 w-12 items-center justify-center rounded-full transition-colors',
-                    active && 'bg-primary/12',
-                  )}
+                <Icon className="size-5" aria-hidden="true" />
+              </span>
+              {item.label}
+            </>
+          )
+
+          return (
+            <li key={item.label}>
+              {isLogout ? (
+                // Se for o botão de sair, usamos a tag <button> e disparamos o Firebase
+                <button type="button" onClick={handleLogout} className={baseClasses}>
+                  {innerContent}
+                </button>
+              ) : (
+                // Se for os outros menus, usamos o <Link> normal do React Router
+                <Link
+                  to={item.href || '/'}
+                  aria-current={active ? 'page' : undefined}
+                  className={baseClasses}
                 >
-                  <Icon className="size-5" aria-hidden="true" />
-                </span>
-                {item.label}
-              </Link>
+                  {innerContent}
+                </Link>
+              )}
             </li>
           )
         })}

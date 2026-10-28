@@ -1,8 +1,10 @@
   
-import { useState, type FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Eye, EyeOff, Loader2, Lock, Mail } from 'lucide-react'
-import { cn } from '../lib/utils'
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../firebase";
+import { useState, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Eye, EyeOff, Loader2, Lock, Mail } from 'lucide-react';
+import { cn } from '../lib/utils';
 
 type Errors = { email?: string; password?: string }
 
@@ -10,29 +12,43 @@ const inputBaseClass =
   'h-12 w-full rounded-xl border border-slate-700/60 bg-[#0c1322] pl-11 pr-4 text-sm text-slate-100 placeholder:text-slate-500 transition-colors focus:border-[#fbb03b] focus:ring-2 focus:ring-[#fbb03b]/20 focus:outline-none'
 
 export function LoginForm() {
+
+  // Estados para capturar os dados
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [erro, setErro] = useState(""); // Para mostrar mensagens se a senha estiver errada
+  
+  const navigate = useNavigate(); // Ferramenta para mudar de página após o login
+
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<Errors>({})
   const [loading, setLoading] = useState(false)
-  const navigate = useNavigate()
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    const data = new FormData(event.currentTarget)
-    const email = String(data.get('email') ?? '').trim()
-    const password = String(data.get('password') ?? '')
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  event.preventDefault()
+  
+  const nextErrors: Errors = {}
+  
+  if (!email) nextErrors.email = 'Informe seu e-mail.'
+  else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    nextErrors.email = 'Digite um e-mail válido.'
+  
+  if (!password) nextErrors.password = 'Informe sua senha.'
 
-    const nextErrors: Errors = {}
-    if (!email) nextErrors.email = 'Informe seu e-mail.'
-    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-      nextErrors.email = 'Digite um e-mail válido.'
-    if (!password) nextErrors.password = 'Informe sua senha.'
+  setErrors(nextErrors)
+  if (Object.keys(nextErrors).length > 0) return
 
-    setErrors(nextErrors)
-    if (Object.keys(nextErrors).length > 0) return
-
-    setLoading(true)
-    setTimeout(() => navigate('/produtos'), 800)
+  setLoading(true)
+  try {
+    await signInWithEmailAndPassword(auth, email, password)
+    navigate('/produtos')
+  } catch (error) {
+    console.error("Erro na autenticação:", error)
+    setErrors({ email: 'Credenciais inválidas. Verifique seu e-mail e senha.' })
+  } finally {
+    setLoading(false)
   }
+  };
 
   return (
     <form onSubmit={handleSubmit} noValidate className="flex flex-col gap-4">
@@ -51,6 +67,9 @@ export function LoginForm() {
             type="email"
             inputMode="email"
             autoComplete="email"
+            required
+            value={email} 
+            onChange={(e) => setEmail(e.target.value)}
             placeholder="voce@lojaufscar.com.br"
             aria-invalid={Boolean(errors.email)}
             aria-describedby={errors.email ? 'email-error' : undefined}
@@ -85,6 +104,9 @@ export function LoginForm() {
             type={showPassword ? 'text' : 'password'}
             autoComplete="current-password"
             placeholder="Digite sua senha"
+            required
+            value={password} 
+            onChange={(e) => setPassword(e.target.value)}
             aria-invalid={Boolean(errors.password)}
             aria-describedby={errors.password ? 'password-error' : undefined}
             className={cn(
