@@ -5,7 +5,12 @@ import { cn } from '../../lib/utils'
 import { BrandMark } from './brand-mark'
 import { LOGOUT_ITEM, NAV_ITEMS } from './nav-items'
 
-export function AppSidebar() {
+interface AppSidebarProps {
+  perfil: string | null;
+  nome: string;
+}
+
+export function AppSidebar({ perfil, nome }: AppSidebarProps) {
   const { pathname } = useLocation()
   const navigate = useNavigate()
 
@@ -19,6 +24,15 @@ export function AppSidebar() {
     }
   }
 
+  // Filtramos os menus baseados no cargo
+  const menuPermitido = NAV_ITEMS.filter((item) => {
+    // Se for funcionário, não desenha o botão de Estoque
+    if (perfil === 'funcionario' && item.href === '/estoque') {
+      return false;
+    }
+    return true; // O gerente vê tudo
+  });
+
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-sidebar-border bg-sidebar md:flex">
       <div className="flex h-16 items-center border-b border-sidebar-border px-5">
@@ -29,7 +43,7 @@ export function AppSidebar() {
         <p className="px-3 pt-2 pb-1 text-xs font-semibold tracking-wider text-muted-foreground uppercase">
           Menu
         </p>
-        {NAV_ITEMS.map((item) => {
+        {menuPermitido.map((item) => {
           // Fallback seguro caso algum item não tenha href (embora os NAV_ITEMS tenham)
           const active = pathname.startsWith(item.href || '')
           const Icon = item.icon
@@ -55,11 +69,13 @@ export function AppSidebar() {
       <div className="flex flex-col gap-3 border-t border-sidebar-border p-3">
         <div className="flex items-center gap-3 rounded-lg px-3 py-2">
           <span className="flex size-9 items-center justify-center rounded-full bg-accent text-sm font-bold text-accent-foreground">
-            AM
+            {nome ? nome.charAt(0).toUpperCase() : (perfil === 'gerente' ? 'G' : 'F')}
           </span>
           <div className="min-w-0">
-            <p className="truncate text-sm font-semibold text-foreground">Ana Martins</p>
-            <p className="text-xs text-muted-foreground">Gerente</p>
+            <p className="truncate text-sm font-semibold text-foreground">{nome}</p>
+            <p className="text-xs text-muted-foreground capitalize">
+              {perfil || 'Carregando...'}
+            </p>
           </div>
         </div>
         

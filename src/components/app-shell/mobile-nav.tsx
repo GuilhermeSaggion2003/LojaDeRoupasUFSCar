@@ -5,24 +5,44 @@ import { cn } from '../../lib/utils'
 import { BrandMark } from './brand-mark'
 import { LOGOUT_ITEM, NAV_ITEMS } from './nav-items'
 
-export function MobileHeader() {
+interface MobileHeaderProps {
+  nome?: string;
+  perfil?: string | null;
+}
+
+export function MobileHeader({ nome, perfil }: MobileHeaderProps) {
+  const inicial = nome ? nome.charAt(0).toUpperCase() : (perfil === 'gerente' ? 'G' : 'F')
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background/85 px-4 backdrop-blur-md md:hidden">
       <BrandMark />
       <span
         className="flex size-8 items-center justify-center rounded-full bg-accent text-xs font-bold text-accent-foreground"
-        aria-label="Ana Martins, Gerente"
+        aria-label={`${nome || 'Usuário'}, ${perfil || 'Perfil'}`}
       >
-        AM
+        {inicial}
       </span>
     </header>
   )
 }
 
-export function MobileBottomNav() {
+interface MobileNavProps {
+  perfil: string | null;
+}
+
+export function MobileBottomNav({ perfil }: MobileNavProps) {
   const { pathname } = useLocation()
   const navigate = useNavigate()
-  const items = [...NAV_ITEMS, LOGOUT_ITEM]
+
+  // Filtramos os menus baseados no cargo
+  const menuPermitido = NAV_ITEMS.filter((item) => {
+    // Se for funcionário, esconde o botão de Estoque
+    if (perfil === 'funcionario' && item.href === '/estoque') {
+      return false
+    }
+    return true
+  })
+
+  const items = [...menuPermitido, LOGOUT_ITEM]
 
   // Função que destrói a sessão no Firebase
   const handleLogout = async (e: React.MouseEvent) => {

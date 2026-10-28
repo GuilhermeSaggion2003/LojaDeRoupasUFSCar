@@ -1,6 +1,7 @@
 // 1. Importar as funções fundamentais do núcleo do Firebase e do módulo de Autenticação
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
 
 // 2. Colar as credenciais copiadas da Consola do Firebase
 const firebaseConfig = {
@@ -18,3 +19,4 @@ const app = initializeApp(firebaseConfig);
 
 // 4. Ativar o serviço de autenticação e exportá-lo
 export const auth = getAuth(app);
+export const db = getFirestore(app);
