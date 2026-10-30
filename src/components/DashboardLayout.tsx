@@ -5,12 +5,13 @@ import { doc, getDoc } from 'firebase/firestore'
 import { auth, db } from '../firebase' // Confirme se o caminho para o firebase.ts está correto
 import { AppSidebar } from './app-shell/app-sidebar'
 import { MobileBottomNav, MobileHeader } from './app-shell/mobile-nav'
+import type { Perfil, Session } from '../hooks/use-session'
 
 export default function DashboardLayout() {
   const navigate = useNavigate()
   const location = useLocation() 
   const [isCheckingAuth, setIsCheckingAuth] = useState(true)
-  const [perfil, setPerfil] = useState<string | null>(null)
+  const [perfil, setPerfil] = useState<Perfil | null>(null)
   const [nome, setNome] = useState<string>('Carregando...')
 
   // 1. Descobrir quem é o utilizador e qual o seu cargo
@@ -62,7 +63,8 @@ export default function DashboardLayout() {
       <MobileHeader nome={nome} perfil={perfil}/>
       <main className="pb-24 md:pb-0 md:pl-64">
         <div className="mx-auto w-full max-w-6xl px-4 py-6 md:px-8 md:py-8">
-          <Outlet />
+          {/* Disponibiliza nome e perfil às páginas (ver hooks/use-session) */}
+          <Outlet context={{ nome, perfil } satisfies Session} />
         </div>
       </main>
       <MobileBottomNav perfil={perfil} />

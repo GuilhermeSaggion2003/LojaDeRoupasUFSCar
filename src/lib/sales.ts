@@ -1,4 +1,4 @@
-import type { Product } from '@/lib/products'
+import type { Product } from './products'
 
 export type TransactionType = 'venda' | 'troca' | 'devolucao'
 

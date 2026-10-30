@@ -1,29 +1,63 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Função auxiliar para verificar se a requisição vem de um usuário logado
-    function isAutenticado() {
-      return request.auth != null;
+
+    // Cada utilizador autenticado lê apenas o seu próprio documento de perfil.
+    // A escrita é bloqueada: perfis são atribuídos pelo console do Firebase, senão
+    // um funcionário poderia alterar o próprio campo "perfil" para "gerente".
+    match /usuarios/{userId} {
+      allow read: if request.auth != null && request.auth.uid == userId;
+      allow write: if false;
     }
 
-    match /produtos/{produtoId} {
-      // Preliminar: Apenas logados podem ler e escrever.
-      // Futuramente, a escrita (write) será restrita ao perfil "gerente".
-      allow read, write: if isAutenticado();
-    }
-    
-    match /estoque/{estoqueId} {
-      allow read, write: if isAutenticado();
+    // Função para verificar se o utilizador logado é gerente (para as outras coleções)
+    function getPerfil() {
+      return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.perfil;
     }
 
-    match /vendas/{vendaId} {
-      allow read, write: if isAutenticado();
+    // Formato obrigatório de um produto. O preço é guardado em centavos (inteiro)
+    // para evitar erros de arredondamento.
+    function produtoValido(p) {
+      return p.keys().hasAll(['nome', 'tamanho', 'cor', 'preco', 'categoria', 'estoque', 'criadoEm', 'atualizadoEm'])
+        && p.keys().hasOnly(['nome', 'tamanho', 'cor', 'preco', 'categoria', 'estoque', 'criadoEm', 'atualizadoEm'])
+        && p.nome is string && p.nome.size() > 0 && p.nome.size() <= 100
+        && p.tamanho is string && p.tamanho.size() > 0 && p.tamanho.size() <= 20
+        && p.cor is map && p.cor.keys().hasOnly(['nome', 'hex'])
+        && p.cor.nome is string && p.cor.nome.size() > 0 && p.cor.nome.size() <= 40
+        && p.cor.hex is string && p.cor.hex.matches('^#[0-9a-fA-F]{6}$')
+        && p.preco is int && p.preco > 0 && p.preco <= 10000000
+        && p.categoria in ['Camisetas', 'Moletons', 'Calças', 'Bonés', 'Acessórios']
+        && p.estoque is int && p.estoque >= 0
+        && p.criadoEm is timestamp && p.atualizadoEm is timestamp;
     }
 
-    match /usuarios/{usuarioId} {
-      // Preliminar: Usuário logado só pode ler e editar o seu próprio documento.
-      allow read, write: if isAutenticado() && request.auth.uid == usuarioId;
+    // Restrições de Produtos
+    match /produtos/{produto} {
+      allow read: if request.auth != null;
+      // Produto nasce com estoque zero: entradas são registradas no módulo de Estoque
+      allow create: if request.auth != null && getPerfil() == 'gerente'
+        && produtoValido(request.resource.data)
+        && request.resource.data.estoque == 0
+        && request.resource.data.criadoEm == request.time
+        && request.resource.data.atualizadoEm == request.time;
+      // Edição não altera estoque nem data de criação
+      allow update: if request.auth != null && getPerfil() == 'gerente'
+        && produtoValido(request.resource.data)
+        && request.resource.data.estoque == resource.data.estoque
+        && request.resource.data.criadoEm == resource.data.criadoEm
+        && request.resource.data.atualizadoEm == request.time;
+      allow delete: if request.auth != null && getPerfil() == 'gerente';
+    }
+
+    // Restrições de Vendas
+    match /vendas/{venda} {
+      allow create: if request.auth != null;
+      allow read, update, delete: if request.auth != null && getPerfil() == 'gerente';
+    }
+
+    // Restrições de Estoque
+    match /estoque/{item} {
+      allow read, write: if request.auth != null && getPerfil() == 'gerente';
     }
   }
 }

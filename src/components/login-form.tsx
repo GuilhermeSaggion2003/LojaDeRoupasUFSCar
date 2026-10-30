@@ -16,7 +16,6 @@ export function LoginForm() {
   // Estados para capturar os dados
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [erro, setErro] = useState(""); // Para mostrar mensagens se a senha estiver errada
   
   const navigate = useNavigate(); // Ferramenta para mudar de página após o login
 
