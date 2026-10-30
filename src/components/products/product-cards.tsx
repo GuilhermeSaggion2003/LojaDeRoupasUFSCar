@@ -1,7 +1,7 @@
 import { formatPrice, type Product } from '../../lib/products'
 import { ColorSwatch, ProductActions, StockIndicator, type RowActions } from './product-parts'
 
-export function ProductCards({ products, onEdit, onDelete }: RowActions & { products: Product[] }) {
+export function ProductCards({ products, actions }: { products: Product[]; actions?: RowActions }) {
   return (
     <ul className="flex flex-col gap-3 md:hidden">
       {products.map((product) => (
@@ -16,7 +16,7 @@ export function ProductCards({ products, onEdit, onDelete }: RowActions & { prod
               </span>
               <h2 className="font-semibold leading-snug text-foreground text-pretty">{product.name}</h2>
             </div>
-            <ProductActions product={product} onEdit={onEdit} onDelete={onDelete} className="-mt-1 -mr-2" />
+            {actions && <ProductActions product={product} {...actions} className="-mt-1 -mr-2" />}
           </div>
 
           <dl className="grid grid-cols-2 gap-x-4 gap-y-2.5 text-sm">

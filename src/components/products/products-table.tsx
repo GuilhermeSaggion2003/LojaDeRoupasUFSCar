@@ -9,7 +9,7 @@ import {
 import { formatPrice, type Product } from '../../lib/products'
 import { ColorSwatch, ProductActions, StockIndicator, type RowActions } from './product-parts'
 
-export function ProductsTable({ products, onEdit, onDelete }: RowActions & { products: Product[] }) {
+export function ProductsTable({ products, actions }: { products: Product[]; actions?: RowActions }) {
   return (
     <div className="hidden overflow-hidden rounded-2xl border border-border bg-card shadow-xs md:block">
       <Table>
@@ -21,9 +21,11 @@ export function ProductsTable({ products, onEdit, onDelete }: RowActions & { pro
             <TableHead className="text-right">Preço</TableHead>
             <TableHead>Categoria</TableHead>
             <TableHead>Estoque Atual</TableHead>
-            <TableHead className="pr-5 text-right">
-              <span className="sr-only">Ações</span>
-            </TableHead>
+            {actions && (
+              <TableHead className="pr-5 text-right">
+                <span className="sr-only">Ações</span>
+              </TableHead>
+            )}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -49,14 +51,11 @@ export function ProductsTable({ products, onEdit, onDelete }: RowActions & { pro
               <TableCell>
                 <StockIndicator stock={product.stock} />
               </TableCell>
-              <TableCell className="pr-4">
-                <ProductActions
-                  product={product}
-                  onEdit={onEdit}
-                  onDelete={onDelete}
-                  className="justify-end"
-                />
-              </TableCell>
+              {actions && (
+                <TableCell className="pr-4">
+                  <ProductActions product={product} {...actions} className="justify-end" />
+                </TableCell>
+              )}
             </TableRow>
           ))}
         </TableBody>
