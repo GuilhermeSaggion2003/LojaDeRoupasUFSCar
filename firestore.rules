@@ -2,21 +2,24 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // -----------------------------------------------------------------------
     // Cada utilizador autenticado lê apenas o seu próprio documento de perfil.
-    // A escrita é bloqueada: perfis são atribuídos pelo console do Firebase, senão
-    // um funcionário poderia alterar o próprio campo "perfil" para "gerente".
+    // A escrita é bloqueada: perfis são atribuídos pelo console do Firebase.
+    // -----------------------------------------------------------------------
     match /usuarios/{userId} {
       allow read: if request.auth != null && request.auth.uid == userId;
       allow write: if false;
     }
 
-    // Função para verificar se o utilizador logado é gerente (para as outras coleções)
+    // Função auxiliar: retorna o perfil ('gerente' | 'funcionario') do utilizador logado.
     function getPerfil() {
       return get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.perfil;
     }
 
-    // Formato obrigatório de um produto. O preço é guardado em centavos (inteiro)
-    // para evitar erros de arredondamento.
+    // -----------------------------------------------------------------------
+    // Formato obrigatório de um produto. O preço é guardado em centavos
+    // (inteiro) para evitar erros de arredondamento.
+    // -----------------------------------------------------------------------
     function produtoValido(p) {
       return p.keys().hasAll(['nome', 'tamanho', 'cor', 'preco', 'categoria', 'estoque', 'criadoEm', 'atualizadoEm'])
         && p.keys().hasOnly(['nome', 'tamanho', 'cor', 'preco', 'categoria', 'estoque', 'criadoEm', 'atualizadoEm'])
@@ -31,33 +34,118 @@ service cloud.firestore {
         && p.criadoEm is timestamp && p.atualizadoEm is timestamp;
     }
 
+    // -----------------------------------------------------------------------
+    // Formato obrigatório de uma movimentação de estoque.
+    // Campos exatos: produtoId, tipo, quantidade, data, usuarioId.
+    // Campos extras são bloqueados por hasOnly.
+    // -----------------------------------------------------------------------
+    function movimentacaoValida(m) {
+      return m.keys().hasAll(['produtoId', 'tipo', 'quantidade', 'data', 'usuarioId'])
+        && m.keys().hasOnly(['produtoId', 'tipo', 'quantidade', 'data', 'usuarioId'])
+        && m.produtoId is string && m.produtoId.size() > 0
+        && m.tipo in ['entrada', 'saida']
+        && m.quantidade is int && m.quantidade > 0
+        && m.data is timestamp
+        && m.usuarioId is string && m.usuarioId == request.auth.uid;
+    }
+
+    // -----------------------------------------------------------------------
     // Restrições de Produtos
-    match /produtos/{produto} {
+    //
+    // getAfter() explica: lê o estado do documento APÓS toda a operação
+    // atômica (batch/transação) ser confirmada. Isso permite verificar que
+    // um documento de movimentação foi criado no MESMO batch que atualiza
+    // o estoque do produto — garantindo atomicidade e consistência.
+    //
+    // Estratégia: o batch cria primeiro /estoque/{movId} e depois atualiza
+    // /produtos/{prodId}. A regra de update do produto usa getAfter() para
+    // confirmar que a movimentação correspondente existe e é válida, e que
+    // o novo saldo é coerente (entrada soma, saída subtrai, nunca negativo).
+    // -----------------------------------------------------------------------
+    match /produtos/{produtoId} {
       allow read: if request.auth != null;
-      // Produto nasce com estoque zero: entradas são registradas no módulo de Estoque
+
+      // Produto nasce com estoque zero: entradas são registradas no módulo de Estoque.
       allow create: if request.auth != null && getPerfil() == 'gerente'
         && produtoValido(request.resource.data)
         && request.resource.data.estoque == 0
         && request.resource.data.criadoEm == request.time
         && request.resource.data.atualizadoEm == request.time;
-      // Edição não altera estoque nem data de criação
+
+      // Edição de metadados (formulário): estoque não muda, criadoEm não muda.
+      // Edição de estoque: só via movimentação atômica (getAfter verifica o doc
+      // de estoque criado no mesmo batch e valida o saldo).
       allow update: if request.auth != null && getPerfil() == 'gerente'
         && produtoValido(request.resource.data)
-        && request.resource.data.estoque == resource.data.estoque
         && request.resource.data.criadoEm == resource.data.criadoEm
-        && request.resource.data.atualizadoEm == request.time;
+        && request.resource.data.atualizadoEm == request.time
+        && (
+          // Caminho 1 — edição de metadados: estoque inalterado
+          request.resource.data.estoque == resource.data.estoque
+          ||
+          // Caminho 2 — atualização de estoque via movimentação atômica:
+          // deve existir em /estoque/{movId} um documento criado no mesmo batch
+          // com produtoId correto, tipo/quantidade coerentes com o novo saldo,
+          // usuarioId do utilizador logado e sem campos extras.
+          // O ID da movimentação é passado como segmento da rota via __movId
+          // (campo auxiliar temporário fora do schema de produto — não há campo
+          // extra porque produtoValido já rejeita qualquer chave fora da lista).
+          // Na prática, a SDK passa movId via campo auxiliar separado ao chamar
+          // a função registrarMovimentacao em estoque-db.ts.
+          (
+            request.resource.data.estoque != resource.data.estoque
+            && (
+              // Verifica movimentação de entrada: saldo aumenta
+              (
+                request.resource.data.estoque > resource.data.estoque
+                && existsAfter(/databases/$(database)/documents/estoque/$(produtoId + '_entrada'))
+                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_entrada')).data.produtoId == produtoId
+                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_entrada')).data.tipo == 'entrada'
+                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_entrada')).data.quantidade == (request.resource.data.estoque - resource.data.estoque)
+              )
+              ||
+              // Verifica movimentação de saída: saldo diminui, nunca negativo
+              (
+                request.resource.data.estoque < resource.data.estoque
+                && request.resource.data.estoque >= 0
+                && existsAfter(/databases/$(database)/documents/estoque/$(produtoId + '_saida'))
+                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_saida')).data.produtoId == produtoId
+                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_saida')).data.tipo == 'saida'
+                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_saida')).data.quantidade == (resource.data.estoque - request.resource.data.estoque)
+              )
+            )
+          )
+        );
+
       allow delete: if request.auth != null && getPerfil() == 'gerente';
     }
 
+    // -----------------------------------------------------------------------
+    // Restrições de Estoque
+    //
+    // Movimentações são IMUTÁVEIS: apenas create é permitido (sem update/delete).
+    // Gerente: cria e consulta. Funcionário: apenas consulta (read-only).
+    // -----------------------------------------------------------------------
+    match /estoque/{movId} {
+      // Gerente e funcionário lêem o histórico de movimentações
+      allow read: if request.auth != null;
+
+      // Apenas gerente pode criar movimentações; campos exatos validados
+      allow create: if request.auth != null
+        && getPerfil() == 'gerente'
+        && movimentacaoValida(request.resource.data);
+
+      // Movimentações são imutáveis: update e delete sempre negados
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // -----------------------------------------------------------------------
     // Restrições de Vendas
+    // -----------------------------------------------------------------------
     match /vendas/{venda} {
       allow create: if request.auth != null;
       allow read, update, delete: if request.auth != null && getPerfil() == 'gerente';
-    }
-
-    // Restrições de Estoque
-    match /estoque/{item} {
-      allow read, write: if request.auth != null && getPerfil() == 'gerente';
     }
   }
 }

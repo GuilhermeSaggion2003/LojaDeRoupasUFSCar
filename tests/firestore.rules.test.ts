@@ -22,9 +22,14 @@ import {
   setLogLevel,
   Timestamp,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore'
 
 let env: RulesTestEnvironment
+
+// ---------------------------------------------------------------------------
+// Helpers de dados
+// ---------------------------------------------------------------------------
 
 const produto = () => ({
   nome: 'Camiseta Básica UFSCar',
@@ -37,12 +42,24 @@ const produto = () => ({
   atualizadoEm: serverTimestamp(),
 })
 
-const gerente = () => env.authenticatedContext('gerente-uid').firestore()
+/** Movimentação mínima válida para o gerente criar */
+const movimentacao = (tipo: 'entrada' | 'saida', quantidade: number, produtoId = 'p1') => ({
+  produtoId,
+  tipo,
+  quantidade,
+  data: serverTimestamp(),
+  usuarioId: 'gerente-uid',
+})
+
+const gerente    = () => env.authenticatedContext('gerente-uid').firestore()
 const funcionario = () => env.authenticatedContext('funcionario-uid').firestore()
-const anonimo = () => env.unauthenticatedContext().firestore()
+const anonimo    = () => env.unauthenticatedContext().firestore()
+
+// ---------------------------------------------------------------------------
+// Configuração do ambiente de testes
+// ---------------------------------------------------------------------------
 
 beforeAll(async () => {
-  // Os acessos negados são esperados; evita poluir a saída com avisos do SDK
   setLogLevel('error')
   env = await initializeTestEnvironment({
     projectId: 'demo-lojaderoupasufscar',
@@ -60,6 +77,7 @@ beforeEach(async () => {
     const db = ctx.firestore()
     await setDoc(doc(db, 'usuarios/gerente-uid'), { nome: 'Ana', perfil: 'gerente' })
     await setDoc(doc(db, 'usuarios/funcionario-uid'), { nome: 'Carlos', perfil: 'funcionario' })
+    // Produto p1 com estoque 10 — usado nos testes de movimentação
     await setDoc(doc(db, 'produtos/p1'), {
       ...produto(),
       estoque: 10,
@@ -68,6 +86,10 @@ beforeEach(async () => {
     })
   })
 })
+
+// ---------------------------------------------------------------------------
+// usuários
+// ---------------------------------------------------------------------------
 
 describe('usuários', () => {
   it('usuário lê o próprio perfil, mas não o de outro', async () => {
@@ -86,6 +108,10 @@ describe('usuários', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// produtos: consulta
+// ---------------------------------------------------------------------------
+
 describe('produtos: consulta', () => {
   it('gerente e funcionário consultam o catálogo', async () => {
     await assertSucceeds(getDocs(collection(gerente(), 'produtos')))
@@ -96,6 +122,10 @@ describe('produtos: consulta', () => {
     await assertFails(getDocs(collection(anonimo(), 'produtos')))
   })
 })
+
+// ---------------------------------------------------------------------------
+// produtos: cadastro
+// ---------------------------------------------------------------------------
 
 describe('produtos: cadastro', () => {
   it('gerente cadastra um produto válido', async () => {
@@ -120,17 +150,27 @@ describe('produtos: cadastro', () => {
   })
 })
 
+// ---------------------------------------------------------------------------
+// produtos: edição e exclusão (metadados, sem alterar estoque)
+// ---------------------------------------------------------------------------
+
 describe('produtos: edição e exclusão', () => {
-  it('gerente edita os dados do produto', async () => {
+  it('gerente edita os metadados do produto sem alterar estoque', async () => {
     await assertSucceeds(
       updateDoc(doc(gerente(), 'produtos/p1'), { preco: 6990, atualizadoEm: serverTimestamp() }),
     )
   })
 
-  it('edição não altera estoque nem data de criação', async () => {
+  it('edição direta do estoque pelo formulário é bloqueada', async () => {
     await assertFails(
       updateDoc(doc(gerente(), 'produtos/p1'), { estoque: 99, atualizadoEm: serverTimestamp() }),
     )
+    await assertFails(
+      updateDoc(doc(gerente(), 'produtos/p1'), { estoque: 0, atualizadoEm: serverTimestamp() }),
+    )
+  })
+
+  it('edição não pode alterar data de criação', async () => {
     await assertFails(
       updateDoc(doc(gerente(), 'produtos/p1'), {
         criadoEm: serverTimestamp(),
@@ -151,15 +191,248 @@ describe('produtos: edição e exclusão', () => {
   })
 })
 
-describe('vendas e estoque', () => {
+// ---------------------------------------------------------------------------
+// estoque: atualização via movimentação atômica (getAfter)
+// ---------------------------------------------------------------------------
+
+describe('produtos: atualização de estoque via movimentação atômica', () => {
+  it('gerente registra entrada de 5 unidades com batch atômico', async () => {
+    // Estoque atual: 10 → novo estoque: 15
+    const db = gerente()
+    const batch = writeBatch(db)
+    // O ID da movimentação segue o padrão {produtoId}_{tipo} para a regra usar getAfter
+    batch.set(doc(db, 'estoque/p1_entrada'), {
+      produtoId: 'p1',
+      tipo: 'entrada',
+      quantidade: 5,
+      data: serverTimestamp(),
+      usuarioId: 'gerente-uid',
+    })
+    batch.update(doc(db, 'produtos/p1'), {
+      estoque: 15,
+      criadoEm: Timestamp.fromMillis(0),
+      atualizadoEm: serverTimestamp(),
+    })
+    await assertSucceeds(batch.commit())
+  })
+
+  it('gerente registra saída de 3 unidades com batch atômico', async () => {
+    // Estoque atual: 10 → novo estoque: 7
+    const db = gerente()
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'estoque/p1_saida'), {
+      produtoId: 'p1',
+      tipo: 'saida',
+      quantidade: 3,
+      data: serverTimestamp(),
+      usuarioId: 'gerente-uid',
+    })
+    batch.update(doc(db, 'produtos/p1'), {
+      estoque: 7,
+      criadoEm: Timestamp.fromMillis(0),
+      atualizadoEm: serverTimestamp(),
+    })
+    await assertSucceeds(batch.commit())
+  })
+
+  it('bloqueia batch com saldo incoerente na entrada (quantidade != diferença)', async () => {
+    // Movimentação diz 5 mas produto tenta ir de 10 para 20 (diferença 10)
+    const db = gerente()
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'estoque/p1_entrada'), {
+      produtoId: 'p1',
+      tipo: 'entrada',
+      quantidade: 5,
+      data: serverTimestamp(),
+      usuarioId: 'gerente-uid',
+    })
+    batch.update(doc(db, 'produtos/p1'), {
+      estoque: 20,
+      criadoEm: Timestamp.fromMillis(0),
+      atualizadoEm: serverTimestamp(),
+    })
+    await assertFails(batch.commit())
+  })
+
+  it('bloqueia batch com saldo incoerente na saída (quantidade != diferença)', async () => {
+    // Movimentação diz 3 mas produto tenta ir de 10 para 5 (diferença 5)
+    const db = gerente()
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'estoque/p1_saida'), {
+      produtoId: 'p1',
+      tipo: 'saida',
+      quantidade: 3,
+      data: serverTimestamp(),
+      usuarioId: 'gerente-uid',
+    })
+    batch.update(doc(db, 'produtos/p1'), {
+      estoque: 5,
+      criadoEm: Timestamp.fromMillis(0),
+      atualizadoEm: serverTimestamp(),
+    })
+    await assertFails(batch.commit())
+  })
+
+  it('bloqueia saída que resultaria em saldo negativo', async () => {
+    // Estoque atual: 10, tentativa de saída de 15 (resultado: -5)
+    const db = gerente()
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'estoque/p1_saida'), {
+      produtoId: 'p1',
+      tipo: 'saida',
+      quantidade: 15,
+      data: serverTimestamp(),
+      usuarioId: 'gerente-uid',
+    })
+    batch.update(doc(db, 'produtos/p1'), {
+      estoque: -5,
+      criadoEm: Timestamp.fromMillis(0),
+      atualizadoEm: serverTimestamp(),
+    })
+    await assertFails(batch.commit())
+  })
+
+  it('bloqueia atualização de estoque sem movimentação correspondente', async () => {
+    // Sem batch, apenas updateDoc direto — não cria movimentação
+    await assertFails(
+      updateDoc(doc(gerente(), 'produtos/p1'), {
+        estoque: 15,
+        criadoEm: Timestamp.fromMillis(0),
+        atualizadoEm: serverTimestamp(),
+      }),
+    )
+  })
+
+  it('bloqueia batch com movimentação de produto diferente do produto atualizado', async () => {
+    // Movimentação aponta para 'p2' mas update é em 'p1'
+    const db = gerente()
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'estoque/p1_entrada'), {
+      produtoId: 'p2', // ID errado!
+      tipo: 'entrada',
+      quantidade: 5,
+      data: serverTimestamp(),
+      usuarioId: 'gerente-uid',
+    })
+    batch.update(doc(db, 'produtos/p1'), {
+      estoque: 15,
+      criadoEm: Timestamp.fromMillis(0),
+      atualizadoEm: serverTimestamp(),
+    })
+    await assertFails(batch.commit())
+  })
+})
+
+// ---------------------------------------------------------------------------
+// estoque: coleção de movimentações
+// ---------------------------------------------------------------------------
+
+describe('estoque: criação de movimentações', () => {
+  it('gerente cria movimentação de entrada válida', async () => {
+    await assertSucceeds(
+      setDoc(doc(gerente(), 'estoque/mov1'), movimentacao('entrada', 10)),
+    )
+  })
+
+  it('gerente cria movimentação de saída válida', async () => {
+    await assertSucceeds(
+      setDoc(doc(gerente(), 'estoque/mov2'), movimentacao('saida', 3)),
+    )
+  })
+
+  it('funcionário não cria movimentação', async () => {
+    await assertFails(
+      setDoc(doc(funcionario(), 'estoque/mov3'), {
+        produtoId: 'p1',
+        tipo: 'entrada',
+        quantidade: 5,
+        data: serverTimestamp(),
+        usuarioId: 'funcionario-uid',
+      }),
+    )
+  })
+
+  it('anônimo não cria movimentação', async () => {
+    await assertFails(
+      addDoc(collection(anonimo(), 'estoque'), { quantidade: 1 }),
+    )
+  })
+
+  it.each([
+    ['tipo inválido', { tipo: 'ajuste' }],
+    ['quantidade zero', { quantidade: 0 }],
+    ['quantidade negativa', { quantidade: -1 }],
+    ['quantidade decimal (float)', { quantidade: 1.5 }],
+    ['produtoId vazio', { produtoId: '' }],
+    ['campo extra', { observacao: 'teste' }],
+    ['usuarioId diferente do uid autenticado', { usuarioId: 'outro-uid' }],
+  ])('rejeita movimentação com %s', async (_, override) => {
+    await assertFails(
+      setDoc(
+        doc(gerente(), 'estoque/mov_invalido'),
+        { ...movimentacao('entrada', 5), ...override },
+      ),
+    )
+  })
+})
+
+describe('estoque: leitura', () => {
+  it('gerente lê o histórico de movimentações', async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'estoque/m1'), movimentacao('entrada', 10))
+    })
+    await assertSucceeds(getDocs(collection(gerente(), 'estoque')))
+  })
+
+  it('funcionário lê o histórico de movimentações', async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'estoque/m1'), movimentacao('entrada', 10))
+    })
+    await assertSucceeds(getDocs(collection(funcionario(), 'estoque')))
+  })
+
+  it('anônimo não lê movimentações', async () => {
+    await assertFails(getDocs(collection(anonimo(), 'estoque')))
+  })
+})
+
+describe('estoque: imutabilidade (update e delete negados)', () => {
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'estoque/m_imutavel'), {
+        produtoId: 'p1',
+        tipo: 'entrada',
+        quantidade: 5,
+        data: Timestamp.fromMillis(0),
+        usuarioId: 'gerente-uid',
+      })
+    })
+  })
+
+  it('gerente não consegue atualizar uma movimentação existente', async () => {
+    await assertFails(
+      updateDoc(doc(gerente(), 'estoque/m_imutavel'), { quantidade: 99 }),
+    )
+  })
+
+  it('gerente não consegue deletar uma movimentação', async () => {
+    await assertFails(deleteDoc(doc(gerente(), 'estoque/m_imutavel')))
+  })
+
+  it('funcionário não consegue deletar uma movimentação', async () => {
+    await assertFails(deleteDoc(doc(funcionario(), 'estoque/m_imutavel')))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// vendas
+// ---------------------------------------------------------------------------
+
+describe('vendas', () => {
   it('funcionário registra venda, mas só o gerente consulta as vendas', async () => {
     await assertSucceeds(addDoc(collection(funcionario(), 'vendas'), { total: 5990 }))
     await assertFails(getDocs(collection(funcionario(), 'vendas')))
     await assertSucceeds(getDocs(collection(gerente(), 'vendas')))
   })
-
-  it('apenas o gerente acessa as movimentações de estoque', async () => {
-    await assertFails(getDocs(collection(funcionario(), 'estoque')))
-    await assertSucceeds(addDoc(collection(gerente(), 'estoque'), { quantidade: 1 }))
-  })
 })
+

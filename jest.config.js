@@ -10,7 +10,7 @@ export default {
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
   },
-  collectCoverageFrom: ['src/lib/products.ts'],
+  collectCoverageFrom: ['src/lib/products.ts', 'src/lib/estoque.ts'],
   // Indicador de qualidade do PGP (seção 5.2): cobertura ≥ 80% das regras de negócio
   coverageThreshold: {
     global: { statements: 80, branches: 80, functions: 80, lines: 80 },
