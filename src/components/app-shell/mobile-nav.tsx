@@ -29,18 +29,12 @@ interface MobileNavProps {
   perfil: string | null;
 }
 
-export function MobileBottomNav({ perfil }: MobileNavProps) {
+export function MobileBottomNav({ perfil: _perfil }: MobileNavProps) {
   const { pathname } = useLocation()
   const navigate = useNavigate()
 
-  // Filtramos os menus baseados no cargo
-  const menuPermitido = NAV_ITEMS.filter((item) => {
-    // Se for funcionário, esconde o botão de Estoque
-    if (perfil === 'funcionario' && item.href === '/estoque') {
-      return false
-    }
-    return true
-  })
+  // Todos os itens de menu estão disponíveis para gerente e funcionário
+  const menuPermitido = NAV_ITEMS
 
   const items = [...menuPermitido, LOGOUT_ITEM]
 

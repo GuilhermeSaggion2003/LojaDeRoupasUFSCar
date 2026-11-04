@@ -24,14 +24,9 @@ export function AppSidebar({ perfil, nome }: AppSidebarProps) {
     }
   }
 
-  // Filtramos os menus baseados no cargo
-  const menuPermitido = NAV_ITEMS.filter((item) => {
-    // Se for funcionário, não desenha o botão de Estoque
-    if (perfil === 'funcionario' && item.href === '/estoque') {
-      return false;
-    }
-    return true; // O gerente vê tudo
-  });
+  // Todos os itens de menu estão disponíveis para gerente e funcionário
+  // (no estoque e catálogo de produtos, o funcionário opera em modo consulta).
+  const menuPermitido = NAV_ITEMS
 
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-sidebar-border bg-sidebar md:flex">

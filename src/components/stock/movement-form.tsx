@@ -1,14 +1,21 @@
-import { useState } from 'react'
-import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Minus, Plus } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { ArrowDownLeft, ArrowUpRight, CheckCircle2, AlertCircle, Loader2, Minus, Plus } from 'lucide-react'
 import { Button } from '../ui/button'
 import type { Product } from '../../lib/products'
-import type { MovementType } from '../../lib/stock'
+import {
+  calculateNewBalance,
+  validateMovement,
+  type MovementType,
+} from '../../lib/estoque'
+import { describeEstoqueError, registrarMovimentacao } from '../../lib/estoque-db'
+import { auth } from '../../firebase'
 import { cn } from '../../lib/utils'
 import { ProductCombobox } from './product-combobox'
 
 type Props = {
   products: Product[]
-  onSubmit: (product: Product, type: MovementType, quantity: number) => void
+  preSelectedProduct?: Product | null
+  onMovementSuccess?: () => void
 }
 
 const TYPE_OPTIONS: { value: MovementType; label: string; icon: typeof ArrowDownLeft }[] = [
@@ -16,41 +23,99 @@ const TYPE_OPTIONS: { value: MovementType; label: string; icon: typeof ArrowDown
   { value: 'saida', label: 'Saída', icon: ArrowUpRight },
 ]
 
-export function MovementForm({ products, onSubmit }: Props) {
-  const [productId, setProductId] = useState<string | null>(null)
+export function MovementForm({ products, preSelectedProduct, onMovementSuccess }: Props) {
+  const [selectedProduct, setSelectedProduct] = useState<Product | null>(preSelectedProduct ?? null)
   const [type, setType] = useState<MovementType>('entrada')
   const [quantity, setQuantity] = useState('1')
   const [errors, setErrors] = useState<{ product?: string; quantity?: string }>({})
-  const [success, setSuccess] = useState<string | null>(null)
+  const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
+  const [submitting, setSubmitting] = useState(false)
 
-  const product = products.find((p) => p.id === productId) ?? null
+  // Sincroniza se o componente pai passar um produto pré-selecionado (ex: via botão "Repor" do painel de alertas)
+  useEffect(() => {
+    if (preSelectedProduct) {
+      setSelectedProduct(preSelectedProduct)
+      setType('entrada')
+      setNotice(null)
+      setErrors({})
+    }
+  }, [preSelectedProduct])
+
+  // Mantém o objeto de produto atualizado com o estoque mais recente da lista de produtos
+  const currentProduct = selectedProduct
+    ? (products.find((p) => p.id === selectedProduct.id) ?? selectedProduct)
+    : null
+
   const qty = Number(quantity)
 
   function changeQuantity(next: number) {
     setQuantity(String(Math.max(1, next)))
     setErrors((e) => ({ ...e, quantity: undefined }))
+    setNotice(null)
   }
 
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
-    const nextErrors: typeof errors = {}
-    if (!product) nextErrors.product = 'Selecione um produto.'
-    if (!Number.isInteger(qty) || qty < 1) nextErrors.quantity = 'Informe uma quantidade válida.'
-    else if (product && type === 'saida' && qty > product.stock)
-      nextErrors.quantity = `Estoque insuficiente. Disponível: ${product.stock}.`
 
-    setErrors(nextErrors)
-    if (Object.keys(nextErrors).length > 0 || !product) {
-      setSuccess(null)
+    if (!currentProduct) {
+      setErrors({ product: 'Selecione um produto.' })
+      setNotice(null)
       return
     }
 
-    onSubmit(product, type, qty)
-    setSuccess(
-      `${type === 'entrada' ? 'Entrada' : 'Saída'} de ${qty} ${qty === 1 ? 'unidade' : 'unidades'} registrada para ${product.name}.`,
+    const validation = validateMovement(
+      currentProduct.id,
+      type,
+      qty || '',
+      currentProduct.stock,
     )
-    setProductId(null)
-    setQuantity('1')
+
+    if (!validation.ok) {
+      if (validation.error.includes('produto')) {
+        setErrors({ product: validation.error })
+      } else {
+        setErrors({ quantity: validation.error })
+      }
+      setNotice(null)
+      return
+    }
+
+    setErrors({})
+    setSubmitting(true)
+    setNotice(null)
+
+    try {
+      const uid = auth.currentUser?.uid
+      if (!uid) {
+        throw new Error('Sessão expirada. Faça login novamente.')
+      }
+
+      const novoSaldo = calculateNewBalance(currentProduct.stock, type, qty)
+
+      await registrarMovimentacao(
+        currentProduct.id,
+        type,
+        qty,
+        novoSaldo,
+        uid,
+      )
+
+      setNotice({
+        tone: 'success',
+        text: `${type === 'entrada' ? 'Entrada' : 'Saída'} de ${qty} ${qty === 1 ? 'unidade' : 'unidades'} registrada para "${currentProduct.name}". Novo saldo: ${novoSaldo} un.`,
+      })
+      setSelectedProduct(null)
+      setQuantity('1')
+      onMovementSuccess?.()
+    } catch (err) {
+      console.error('Erro ao registrar movimentação:', err)
+      setNotice({
+        tone: 'error',
+        text: describeEstoqueError(err),
+      })
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -58,12 +123,16 @@ export function MovementForm({ products, onSubmit }: Props) {
       aria-labelledby="movement-form-title"
       className="rounded-2xl border border-border bg-card p-4 shadow-xs sm:p-5"
     >
-      <h2 id="movement-form-title" className="text-base font-semibold text-foreground">
-        Registrar Movimentação
-      </h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 id="movement-form-title" className="text-base font-semibold text-foreground">
+          Registrar Movimentação
+        </h2>
+        <span className="text-xs text-muted-foreground">Gravação atômica com validação de regras</span>
+      </div>
 
       <form onSubmit={handleSubmit} noValidate className="mt-4 flex flex-col gap-4">
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto] lg:items-start">
+          {/* Seletor de produto com Combobox */}
           <div className="flex flex-col gap-2">
             <label htmlFor="movement-product" className="text-sm font-medium text-foreground">
               Produto
@@ -71,11 +140,11 @@ export function MovementForm({ products, onSubmit }: Props) {
             <ProductCombobox
               id="movement-product"
               products={products}
-              selected={product}
+              selected={currentProduct}
               onSelect={(p) => {
-                setProductId(p?.id ?? null)
+                setSelectedProduct(p)
                 setErrors((e) => ({ ...e, product: undefined, quantity: undefined }))
-                setSuccess(null)
+                setNotice(null)
               }}
               invalid={Boolean(errors.product)}
               describedBy={errors.product ? 'movement-product-error' : undefined}
@@ -87,6 +156,7 @@ export function MovementForm({ products, onSubmit }: Props) {
             )}
           </div>
 
+          {/* Tipo de movimentação (Entrada / Saída) */}
           <fieldset className="flex flex-col gap-2">
             <legend className="mb-2 text-sm font-medium text-foreground">Tipo</legend>
             <div role="radiogroup" className="grid h-12 grid-cols-2 gap-1 rounded-xl bg-muted p-1 lg:w-56">
@@ -102,9 +172,11 @@ export function MovementForm({ products, onSubmit }: Props) {
                     onClick={() => {
                       setType(option.value)
                       setErrors((e) => ({ ...e, quantity: undefined }))
+                      setNotice(null)
                     }}
+                    disabled={submitting}
                     className={cn(
-                      'flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold transition-colors',
+                      'flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold transition-colors disabled:opacity-50',
                       checked
                         ? option.value === 'entrada'
                           ? 'bg-emerald-600 text-white shadow-sm'
@@ -120,6 +192,7 @@ export function MovementForm({ products, onSubmit }: Props) {
             </div>
           </fieldset>
 
+          {/* Quantidade com botões +/- */}
           <div className="flex flex-col gap-2">
             <label htmlFor="movement-quantity" className="text-sm font-medium text-foreground">
               Quantidade
@@ -133,7 +206,8 @@ export function MovementForm({ products, onSubmit }: Props) {
               <button
                 type="button"
                 onClick={() => changeQuantity((qty || 1) - 1)}
-                className="flex h-full w-12 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                disabled={submitting || qty <= 1}
+                className="flex h-full w-12 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-40"
               >
                 <Minus className="size-4" aria-hidden="true" />
                 <span className="sr-only">Diminuir quantidade</span>
@@ -144,9 +218,11 @@ export function MovementForm({ products, onSubmit }: Props) {
                 inputMode="numeric"
                 min={1}
                 value={quantity}
+                disabled={submitting}
                 onChange={(e) => {
                   setQuantity(e.target.value)
                   setErrors((er) => ({ ...er, quantity: undefined }))
+                  setNotice(null)
                 }}
                 aria-invalid={Boolean(errors.quantity) || undefined}
                 aria-describedby={errors.quantity ? 'movement-quantity-error' : undefined}
@@ -155,7 +231,8 @@ export function MovementForm({ products, onSubmit }: Props) {
               <button
                 type="button"
                 onClick={() => changeQuantity((qty || 0) + 1)}
-                className="flex h-full w-12 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground"
+                disabled={submitting}
+                className="flex h-full w-12 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground disabled:opacity-40"
               >
                 <Plus className="size-4" aria-hidden="true" />
                 <span className="sr-only">Aumentar quantidade</span>
@@ -168,24 +245,40 @@ export function MovementForm({ products, onSubmit }: Props) {
             )}
           </div>
 
+          {/* Botão de confirmação */}
           <div className="flex flex-col gap-2">
             <span aria-hidden="true" className="hidden text-sm lg:block">
               &nbsp;
             </span>
             <Button
               type="submit"
+              disabled={submitting}
               className="h-12 rounded-xl px-6 text-base font-semibold shadow-sm shadow-primary/20 lg:text-sm"
             >
-              Confirmar
+              {submitting ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" aria-hidden="true" />
+                  Gravando...
+                </>
+              ) : (
+                'Confirmar'
+              )}
             </Button>
           </div>
         </div>
 
+        {/* Feedback visual de sucesso ou erro */}
         <div aria-live="polite">
-          {success && (
+          {notice && notice.tone === 'success' && (
             <p className="flex items-start gap-2 rounded-xl bg-emerald-500/10 px-3.5 py-2.5 text-sm font-medium text-emerald-700 dark:text-emerald-400">
               <CheckCircle2 className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-              {success}
+              {notice.text}
+            </p>
+          )}
+          {notice && notice.tone === 'error' && (
+            <p className="flex items-start gap-2 rounded-xl bg-destructive/10 px-3.5 py-2.5 text-sm font-medium text-destructive">
+              <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              {notice.text}
             </p>
           )}
         </div>

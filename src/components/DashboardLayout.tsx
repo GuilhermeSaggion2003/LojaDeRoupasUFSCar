@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Outlet, useNavigate, useLocation } from 'react-router-dom'
+import { Outlet, useNavigate } from 'react-router-dom'
 import { onAuthStateChanged } from 'firebase/auth'
 import { doc, getDoc } from 'firebase/firestore'
 import { auth, db } from '../firebase' // Confirme se o caminho para o firebase.ts está correto
@@ -9,7 +9,6 @@ import type { Perfil, Session } from '../hooks/use-session'
 
 export default function DashboardLayout() {
   const navigate = useNavigate()
-  const location = useLocation() 
   const [isCheckingAuth, setIsCheckingAuth] = useState(true)
   const [perfil, setPerfil] = useState<Perfil | null>(null)
   const [nome, setNome] = useState<string>('Carregando...')
@@ -45,12 +44,8 @@ export default function DashboardLayout() {
     return () => unsubscribe()
   }, [navigate])
 
-  useEffect(() => {
-    // Bloqueia o funcionário APENAS se ele tentar aceder ao estoque
-    if (perfil === 'funcionario' && location.pathname.includes('/estoque')) {
-      navigate('/vendas') 
-    }
-  }, [perfil, location.pathname, navigate])
+  // Tanto gerente quanto funcionário podem acessar /estoque (gerente registra, funcionário consulta).
+  // Usuários não autenticados são redirecionados para a tela de login pelo listener acima.
 
   if (isCheckingAuth) {
     return <div className="min-h-dvh bg-background flex items-center justify-center">Verificando permissões...</div>

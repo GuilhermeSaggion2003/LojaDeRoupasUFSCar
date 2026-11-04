@@ -1,5 +1,5 @@
 import { ArrowDownLeft, ArrowUpRight } from 'lucide-react'
-import type { MovementType } from '../../lib/stock'
+import type { MovementType } from '../../lib/estoque'
 import { cn } from '../../lib/utils'
 
 export function MovementBadge({ type }: { type: MovementType }) {
