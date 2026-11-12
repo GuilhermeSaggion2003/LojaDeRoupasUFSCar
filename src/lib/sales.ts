@@ -29,22 +29,39 @@ export type SaleItem = {
   precoUnitario: number // em centavos (inteiro positivo)
 }
 
+export type SaleDate = Date | { toDate?: () => Date } | string | number | null | undefined
+
 /** Modelo completo do documento na coleção `vendas` no Cloud Firestore. */
 export type Sale = {
   id?: string
   itens: SaleItem[]
+  itensDevolvidos?: SaleItem[]
   subtotal: number // em centavos (inteiro >= 0)
   desconto: number // em centavos (inteiro >= 0, <= subtotal)
   total: number // em centavos (inteiro >= 0, igual a subtotal - desconto)
   tipo: TransactionType
-  data: any // Timestamp no Firestore / Date no cliente
+  data: SaleDate
   usuarioId: string
+  operadorNome?: string
 }
 
 /** Item no carrinho da interface de Frente de Caixa. */
 export type CartItem = {
   product: Product
   quantity: number
+}
+
+/** Dados estruturados do comprovante de venda para emissão/impressão (RF05/RF06). */
+export type SaleReceiptData = {
+  id: string
+  itens: SaleItem[]
+  itensDevolvidos?: SaleItem[]
+  subtotal: number
+  desconto: number
+  total: number
+  tipo: TransactionType
+  data: Date
+  operadorNome: string
 }
 
 export type DiscountMode = 'percent' | 'value'
@@ -128,14 +145,10 @@ export function calculateDiscount(
     return 0
   }
 
-  let discountCents = 0
-  if (mode === 'percent') {
-    const percent = Math.min(parsed, 100)
-    discountCents = Math.round((subtotal * percent) / 100)
-  } else {
-    // Modo valor em reais: converte para centavos
-    discountCents = toCents(parsed)
-  }
+  const discountCents =
+    mode === 'percent'
+      ? Math.round((subtotal * Math.min(parsed, 100)) / 100)
+      : toCents(parsed)
 
   // O desconto nunca pode exceder o subtotal
   return Math.min(subtotal, Math.max(0, discountCents))
@@ -155,6 +168,7 @@ export function calculateTotal(subtotal: number, discount: number): number {
  */
 export function validateSale(sale: {
   itens: SaleItem[]
+  itensDevolvidos?: SaleItem[]
   subtotal: number
   desconto: number
   total: number
@@ -177,6 +191,17 @@ export function validateSale(sale: {
     }
     if (!Number.isInteger(item.precoUnitario) || item.precoUnitario <= 0) {
       return { ok: false, error: `Preço unitário inválido para o produto "${item.nome}".` }
+    }
+  }
+
+  if (sale.tipo === 'troca' && sale.itensDevolvidos) {
+    for (const item of sale.itensDevolvidos) {
+      if (!item.produtoId) {
+        return { ok: false, error: 'Item devolvido com produto não identificado.' }
+      }
+      if (!Number.isInteger(item.quantidade) || item.quantidade <= 0) {
+        return { ok: false, error: `Quantidade inválida para o item devolvido "${item.nome}".` }
+      }
     }
   }
 
@@ -207,6 +232,91 @@ export function validateSale(sale: {
   return { ok: true }
 }
 
+// ---------------------------------------------------------------------------
+// Abatimento Atômico de Estoque (Subtarefa 1 - RF06)
+// ---------------------------------------------------------------------------
+
+export type StockDelta = {
+  produtoId: string
+  nome: string
+  quantidadeSaida: number
+  quantidadeEntrada: number
+  netDelta: number // negativo diminui estoque, positivo aumenta
+}
+
+/**
+ * Agrupa e calcula as variações de estoque líquidas para cada produto envolvido na transação.
+ * - Venda: todos os itens geram saída (netDelta < 0).
+ * - Devolução: todos os itens retornam ao estoque gerando entrada (netDelta > 0).
+ * - Troca: itens em `itens` geram saída (peças retiradas da loja); itens em `itensDevolvidos`
+ *   geram entrada (peças que retornam à loja).
+ */
+export function calculateSaleStockDeltas(sale: {
+  tipo: TransactionType
+  itens: SaleItem[]
+  itensDevolvidos?: SaleItem[]
+}): Map<string, StockDelta> {
+  const map = new Map<string, StockDelta>()
+
+  function getOrCreate(produtoId: string, nome: string): StockDelta {
+    let delta = map.get(produtoId)
+    if (!delta) {
+      delta = {
+        produtoId,
+        nome,
+        quantidadeSaida: 0,
+        quantidadeEntrada: 0,
+        netDelta: 0,
+      }
+      map.set(produtoId, delta)
+    }
+    return delta
+  }
+
+  for (const item of sale.itens || []) {
+    const delta = getOrCreate(item.produtoId, item.nome)
+    if (sale.tipo === 'devolucao') {
+      delta.quantidadeEntrada += item.quantidade
+    } else {
+      // 'venda' ou 'troca'
+      delta.quantidadeSaida += item.quantidade
+    }
+  }
+
+  if (sale.tipo === 'troca' && sale.itensDevolvidos) {
+    for (const item of sale.itensDevolvidos) {
+      const delta = getOrCreate(item.produtoId, item.nome)
+      delta.quantidadeEntrada += item.quantidade
+    }
+  }
+
+  for (const delta of map.values()) {
+    delta.netDelta = delta.quantidadeEntrada - delta.quantidadeSaida
+  }
+
+  return map
+}
+
+/**
+ * Valida se há saldo em estoque suficiente para aplicar o delta da transação.
+ */
+export function validateStockAvailability(
+  currentStock: number,
+  delta: StockDelta,
+): { ok: true; novoEstoque: number } | { ok: false; error: string } {
+  const safeStock = Math.max(0, Math.floor(currentStock || 0))
+  const novoEstoque = safeStock + delta.netDelta
+
+  if (novoEstoque < 0) {
+    return {
+      ok: false,
+      error: `Estoque insuficiente para "${delta.nome}". Saldo disponível: ${safeStock}, solicitado: ${delta.quantidadeSaida}.`,
+    }
+  }
+
+  return { ok: true, novoEstoque }
+}
+
 /**
  * Formata um valor em centavos diretamente para reais (ex: 5990 -> 'R$ 59,90').
  */
@@ -219,3 +329,173 @@ export function barcodeFor(product: Product): string {
   const n = product.id.replace(/\D/g, '').padStart(4, '0')
   return `78912345${n}`
 }
+
+// ---------------------------------------------------------------------------
+// Formatação de Comprovante de Venda (Subtarefa 3)
+// ---------------------------------------------------------------------------
+
+const receiptDateFormatter = new Intl.DateTimeFormat('pt-BR', {
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric',
+  timeZone: 'America/Sao_Paulo',
+})
+
+const receiptTimeFormatter = new Intl.DateTimeFormat('pt-BR', {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  timeZone: 'America/Sao_Paulo',
+})
+
+/** Converte qualquer representação de data aceita em instância Date nativa. */
+export function parseSaleDate(date: SaleDate): Date {
+  if (date instanceof Date) return date
+  if (date && typeof date === 'object' && 'toDate' in date && typeof (date as { toDate: unknown }).toDate === 'function') {
+    return (date as { toDate: () => Date }).toDate()
+  }
+  if (typeof date === 'string' || typeof date === 'number') {
+    return new Date(date)
+  }
+  return new Date(0)
+}
+
+/** Formata data e hora do comprovante de venda no fuso de São Paulo. */
+export function formatReceiptDate(date: SaleDate = new Date()): {
+  date: string
+  time: string
+  full: string
+} {
+  const d = parseSaleDate(date)
+  const dStr = receiptDateFormatter.format(d)
+  const tStr = receiptTimeFormatter.format(d)
+  return {
+    date: dStr,
+    time: tStr,
+    full: `${dStr} às ${tStr}`,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Filtros e Métricas para Consulta Gerencial de Vendas (Subtarefa 4 - RF06)
+// ---------------------------------------------------------------------------
+
+export type PeriodFilter = 'all' | 'today' | '7days' | '30days'
+export type TransactionTypeFilter = 'all' | TransactionType
+
+export type SalesFilterOptions = {
+  period?: PeriodFilter
+  type?: TransactionTypeFilter
+  search?: string
+  referenceDate?: Date
+}
+
+/**
+ * Filtra vendas por período, tipo de operação e termo de busca (ID, operador, item).
+ */
+export function filterSales(
+  sales: Sale[],
+  options: SalesFilterOptions = {},
+): Sale[] {
+  const { period = 'all', type = 'all', search = '', referenceDate = new Date() } = options
+  const term = search.trim().toLowerCase()
+
+  return sales.filter((sale) => {
+    // 1. Filtro por tipo de transação
+    if (type !== 'all' && sale.tipo !== type) {
+      return false
+    }
+
+    // 2. Filtro por período
+    if (period !== 'all') {
+      const saleDate = parseSaleDate(sale.data)
+      const diffMs = referenceDate.getTime() - saleDate.getTime()
+
+      if (period === 'today') {
+        const isSameDay =
+          saleDate.getFullYear() === referenceDate.getFullYear() &&
+          saleDate.getMonth() === referenceDate.getMonth() &&
+          saleDate.getDate() === referenceDate.getDate()
+        if (!isSameDay) return false
+      } else if (period === '7days') {
+        const maxMs = 7 * 24 * 60 * 60 * 1000
+        if (diffMs > maxMs || diffMs < 0) return false
+      } else if (period === '30days') {
+        const maxMs = 30 * 24 * 60 * 60 * 1000
+        if (diffMs > maxMs || diffMs < 0) return false
+      }
+    }
+
+    // 3. Busca textual
+    if (term) {
+      const idMatch = (sale.id || '').toLowerCase().includes(term)
+      const opMatch =
+        (sale.operadorNome || '').toLowerCase().includes(term) ||
+        (sale.usuarioId || '').toLowerCase().includes(term)
+      const itemMatch = (sale.itens || []).some(
+        (item) =>
+          item.nome.toLowerCase().includes(term) ||
+          item.tamanho.toLowerCase().includes(term) ||
+          item.cor.nome.toLowerCase().includes(term),
+      )
+      if (!idMatch && !opMatch && !itemMatch) {
+        return false
+      }
+    }
+
+    return true
+  })
+}
+
+export type SalesMetrics = {
+  totalTransacoes: number
+  totalFaturadoVendas: number // em centavos
+  totalDevolvido: number // em centavos
+  saldoLiquido: number // em centavos
+  totalPecas: number
+  totalDescontos: number // em centavos
+  ticketMedio: number // em centavos
+}
+
+/**
+ * Calcula indicadores gerenciais (KPIs) sobre a lista de vendas.
+ */
+export function calculateSalesMetrics(sales: Sale[]): SalesMetrics {
+  let totalFaturadoVendas = 0
+  let totalDevolvido = 0
+  let totalDescontos = 0
+  let totalPecas = 0
+  let countVendas = 0
+
+  for (const sale of sales) {
+    if (sale.tipo === 'venda') {
+      totalFaturadoVendas += sale.total || 0
+      totalDescontos += sale.desconto || 0
+      countVendas += 1
+    } else if (sale.tipo === 'devolucao') {
+      totalDevolvido += sale.total || 0
+    } else if (sale.tipo === 'troca') {
+      totalFaturadoVendas += sale.total || 0
+      countVendas += 1
+    }
+
+    for (const item of sale.itens || []) {
+      totalPecas += item.quantidade || 0
+    }
+  }
+
+  const saldoLiquido = Math.max(0, totalFaturadoVendas - totalDevolvido)
+  const ticketMedio = countVendas > 0 ? Math.round(totalFaturadoVendas / countVendas) : 0
+
+  return {
+    totalTransacoes: sales.length,
+    totalFaturadoVendas,
+    totalDevolvido,
+    saldoLiquido,
+    totalPecas,
+    totalDescontos,
+    ticketMedio,
+  }
+}
+
+

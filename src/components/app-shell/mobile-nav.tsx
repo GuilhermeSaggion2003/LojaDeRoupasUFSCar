@@ -29,7 +29,7 @@ interface MobileNavProps {
   perfil: string | null;
 }
 
-export function MobileBottomNav({ perfil: _perfil }: MobileNavProps) {
+export function MobileBottomNav(_props: MobileNavProps) {
   const { pathname } = useLocation()
   const navigate = useNavigate()
 

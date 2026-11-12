@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { ArrowDownLeft, ArrowUpRight, CheckCircle2, AlertCircle, Loader2, Minus, Plus } from 'lucide-react'
 import { Button } from '../ui/button'
 import type { Product } from '../../lib/products'
@@ -32,14 +32,16 @@ export function MovementForm({ products, preSelectedProduct, onMovementSuccess }
   const [submitting, setSubmitting] = useState(false)
 
   // Sincroniza se o componente pai passar um produto pré-selecionado (ex: via botão "Repor" do painel de alertas)
-  useEffect(() => {
+  const [prevPreSelectedProduct, setPrevPreSelectedProduct] = useState(preSelectedProduct)
+  if (preSelectedProduct !== prevPreSelectedProduct) {
+    setPrevPreSelectedProduct(preSelectedProduct)
     if (preSelectedProduct) {
       setSelectedProduct(preSelectedProduct)
       setType('entrada')
       setNotice(null)
       setErrors({})
     }
-  }, [preSelectedProduct])
+  }
 
   // Mantém o objeto de produto atualizado com o estoque mais recente da lista de produtos
   const currentProduct = selectedProduct

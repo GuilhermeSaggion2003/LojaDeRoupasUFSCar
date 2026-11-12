@@ -425,14 +425,234 @@ describe('estoque: imutabilidade (update e delete negados)', () => {
 })
 
 // ---------------------------------------------------------------------------
-// vendas
+// vendas (RF05, RF06 e Subtarefa 2)
 // ---------------------------------------------------------------------------
 
-describe('vendas', () => {
-  it('funcionário registra venda, mas só o gerente consulta as vendas', async () => {
-    await assertSucceeds(addDoc(collection(funcionario(), 'vendas'), { total: 5990 }))
-    await assertFails(getDocs(collection(funcionario(), 'vendas')))
-    await assertSucceeds(getDocs(collection(gerente(), 'vendas')))
+const itemVenda = () => ({
+  produtoId: 'p1',
+  nome: 'Camiseta Básica UFSCar',
+  tamanho: 'M',
+  cor: { nome: 'Azul-marinho', hex: '#1e2a5a' },
+  quantidade: 2,
+  precoUnitario: 5990,
+})
+
+const vendaValida = (usuarioId = 'funcionario-uid', overrides: Record<string, unknown> = {}) => ({
+  itens: [itemVenda()],
+  subtotal: 11980,
+  desconto: 1000,
+  total: 10980,
+  tipo: 'venda',
+  data: serverTimestamp(),
+  usuarioId,
+  ...overrides,
+})
+
+describe('vendas: criação e validação estrita (vendaValida)', () => {
+  it('funcionário registra venda válida com sucesso', async () => {
+    await assertSucceeds(addDoc(collection(funcionario(), 'vendas'), vendaValida('funcionario-uid')))
+  })
+
+  it('gerente registra venda válida com sucesso', async () => {
+    await assertSucceeds(addDoc(collection(gerente(), 'vendas'), vendaValida('gerente-uid')))
+  })
+
+  it('anônimo não pode registrar venda', async () => {
+    await assertFails(addDoc(collection(anonimo(), 'vendas'), vendaValida('anonimo')))
+  })
+
+  it('rejeita venda com lista de itens vazia', async () => {
+    await assertFails(
+      addDoc(collection(funcionario(), 'vendas'), vendaValida('funcionario-uid', { itens: [] })),
+    )
+  })
+
+  it('rejeita venda com inconsistência aritmética (total != subtotal - desconto)', async () => {
+    await assertFails(
+      addDoc(
+        collection(funcionario(), 'vendas'),
+        vendaValida('funcionario-uid', { subtotal: 10000, desconto: 1000, total: 8000 }),
+      ),
+    )
+  })
+
+  it('rejeita desconto em transação de troca ou devolução', async () => {
+    await assertFails(
+      addDoc(
+        collection(funcionario(), 'vendas'),
+        vendaValida('funcionario-uid', {
+          tipo: 'troca',
+          subtotal: 10000,
+          desconto: 500,
+          total: 9500,
+        }),
+      ),
+    )
+    await assertFails(
+      addDoc(
+        collection(funcionario(), 'vendas'),
+        vendaValida('funcionario-uid', {
+          tipo: 'devolucao',
+          subtotal: 10000,
+          desconto: 500,
+          total: 9500,
+        }),
+      ),
+    )
+  })
+
+  it('rejeita venda com desconto maior que o subtotal', async () => {
+    await assertFails(
+      addDoc(
+        collection(funcionario(), 'vendas'),
+        vendaValida('funcionario-uid', {
+          subtotal: 5000,
+          desconto: 6000,
+          total: 0,
+        }),
+      ),
+    )
+  })
+
+  it('rejeita venda com campo extra não permitido (hasOnly)', async () => {
+    await assertFails(
+      addDoc(
+        collection(funcionario(), 'vendas'),
+        vendaValida('funcionario-uid', { observacao: 'campo malicioso extra' }),
+      ),
+    )
+  })
+
+  it('rejeita venda com data de criação forjada', async () => {
+    await assertFails(
+      addDoc(
+        collection(funcionario(), 'vendas'),
+        vendaValida('funcionario-uid', { data: Timestamp.fromMillis(0) }),
+      ),
+    )
+  })
+
+  it('rejeita venda com usuarioId diferente do autenticado', async () => {
+    await assertFails(
+      addDoc(
+        collection(funcionario(), 'vendas'),
+        vendaValida('outro-usuario-uid'),
+      ),
+    )
   })
 })
+
+describe('vendas: controle de acesso e consulta (restrito ao Gerente)', () => {
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'vendas/venda-teste-1'), {
+        itens: [itemVenda()],
+        subtotal: 5990,
+        desconto: 0,
+        total: 5990,
+        tipo: 'venda',
+        data: Timestamp.fromMillis(0),
+        usuarioId: 'funcionario-uid',
+      })
+    })
+  })
+
+  it('gerente consulta o histórico de vendas', async () => {
+    await assertSucceeds(getDocs(collection(gerente(), 'vendas')))
+    await assertSucceeds(getDoc(doc(gerente(), 'vendas/venda-teste-1')))
+  })
+
+  it('funcionário não consulta o histórico de vendas', async () => {
+    await assertFails(getDocs(collection(funcionario(), 'vendas')))
+    await assertFails(getDoc(doc(funcionario(), 'vendas/venda-teste-1')))
+  })
+
+  it('anônimo não consulta vendas', async () => {
+    await assertFails(getDocs(collection(anonimo(), 'vendas')))
+  })
+})
+
+describe('vendas: imutabilidade (update e delete negados)', () => {
+  beforeEach(async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), 'vendas/venda-imutavel'), {
+        itens: [itemVenda()],
+        subtotal: 5990,
+        desconto: 0,
+        total: 5990,
+        tipo: 'venda',
+        data: Timestamp.fromMillis(0),
+        usuarioId: 'funcionario-uid',
+      })
+    })
+  })
+
+  it('gerente não consegue alterar uma venda registrada', async () => {
+    await assertFails(
+      updateDoc(doc(gerente(), 'vendas/venda-imutavel'), { total: 0 }),
+    )
+  })
+
+  it('funcionário não consegue alterar uma venda registrada', async () => {
+    await assertFails(
+      updateDoc(doc(funcionario(), 'vendas/venda-imutavel'), { total: 0 }),
+    )
+  })
+
+  it('gerente não consegue excluir uma venda registrada', async () => {
+    await assertFails(deleteDoc(doc(gerente(), 'vendas/venda-imutavel')))
+  })
+
+  it('funcionário não consegue excluir uma venda registrada', async () => {
+    await assertFails(deleteDoc(doc(funcionario(), 'vendas/venda-imutavel')))
+  })
+})
+
+describe('vendas e estoque: abatimento pelo funcionário em transação de venda', () => {
+  it('funcionário abate estoque e registra movimentação com vendaId válida em batch', async () => {
+    // Estoque inicial de p1 é 10. Venda de 2 unidades -> estoque novo: 8
+    const db = funcionario()
+    const batch = writeBatch(db)
+
+    const novaVendaRef = doc(collection(db, 'vendas'))
+    batch.set(novaVendaRef, vendaValida('funcionario-uid', {
+      total: 10980,
+      subtotal: 11980,
+      desconto: 1000,
+    }))
+
+    batch.update(doc(db, 'produtos/p1'), {
+      estoque: 8,
+      atualizadoEm: serverTimestamp(),
+    })
+
+    batch.set(doc(db, `estoque/${novaVendaRef.id}_p1_saida`), {
+      produtoId: 'p1',
+      tipo: 'saida',
+      quantidade: 2,
+      data: serverTimestamp(),
+      usuarioId: 'funcionario-uid',
+      vendaId: novaVendaRef.id,
+    })
+
+    await assertSucceeds(batch.commit())
+  })
+
+  it('bloqueia funcionário tentando abater estoque que resultaria em saldo negativo', async () => {
+    // Estoque inicial de p1 é 10. Tentativa de deixar -2
+    const db = funcionario()
+    const batch = writeBatch(db)
+
+    const novaVendaRef = doc(collection(db, 'vendas'))
+    batch.set(novaVendaRef, vendaValida('funcionario-uid'))
+
+    batch.update(doc(db, 'produtos/p1'), {
+      estoque: -2,
+      atualizadoEm: serverTimestamp(),
+    })
+
+    await assertFails(batch.commit())
+  })
+})
+
 

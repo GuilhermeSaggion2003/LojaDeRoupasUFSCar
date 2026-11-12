@@ -36,31 +36,51 @@ service cloud.firestore {
 
     // -----------------------------------------------------------------------
     // Formato obrigatório de uma movimentação de estoque.
-    // Campos exatos: produtoId, tipo, quantidade, data, usuarioId.
+    // Campos exatos: produtoId, tipo, quantidade, data, usuarioId
+    // e opcionalmente vendaId (quando originada da finalização de uma venda).
     // Campos extras são bloqueados por hasOnly.
     // -----------------------------------------------------------------------
     function movimentacaoValida(m) {
       return m.keys().hasAll(['produtoId', 'tipo', 'quantidade', 'data', 'usuarioId'])
-        && m.keys().hasOnly(['produtoId', 'tipo', 'quantidade', 'data', 'usuarioId'])
+        && (
+          m.keys().hasOnly(['produtoId', 'tipo', 'quantidade', 'data', 'usuarioId'])
+          || m.keys().hasOnly(['produtoId', 'tipo', 'quantidade', 'data', 'usuarioId', 'vendaId'])
+        )
         && m.produtoId is string && m.produtoId.size() > 0
         && m.tipo in ['entrada', 'saida']
         && m.quantidade is int && m.quantidade > 0
-        && m.data is timestamp
-        && m.usuarioId is string && m.usuarioId == request.auth.uid;
+        && m.data is timestamp && m.data == request.time
+        && m.usuarioId is string && m.usuarioId == request.auth.uid
+        && (!('vendaId' in m) || (m.vendaId is string && m.vendaId.size() > 0));
+    }
+
+    // -----------------------------------------------------------------------
+    // Formato obrigatório de uma transação de venda (RF05/RF06).
+    // Validação estrita de campos, cálculo em centavos inteiros (RNF03),
+    // coerência aritmética de totais e restrição de desconto para vendas.
+    // -----------------------------------------------------------------------
+    function vendaValida(v) {
+      return v.keys().hasAll(['itens', 'subtotal', 'desconto', 'total', 'tipo', 'data', 'usuarioId'])
+        && (
+          v.keys().hasOnly(['itens', 'subtotal', 'desconto', 'total', 'tipo', 'data', 'usuarioId'])
+          || v.keys().hasOnly(['itens', 'subtotal', 'desconto', 'total', 'tipo', 'data', 'usuarioId', 'operadorNome'])
+          || v.keys().hasOnly(['itens', 'subtotal', 'desconto', 'total', 'tipo', 'data', 'usuarioId', 'itensDevolvidos'])
+          || v.keys().hasOnly(['itens', 'subtotal', 'desconto', 'total', 'tipo', 'data', 'usuarioId', 'itensDevolvidos', 'operadorNome'])
+        )
+        && v.itens is list && v.itens.size() > 0 && v.itens.size() <= 100
+        && v.subtotal is int && v.subtotal >= 0
+        && v.desconto is int && v.desconto >= 0 && v.desconto <= v.subtotal
+        && v.total is int && v.total >= 0 && v.total == (v.subtotal - v.desconto)
+        && v.tipo in ['venda', 'troca', 'devolucao']
+        && (v.tipo == 'venda' || v.desconto == 0)
+        && v.data is timestamp && v.data == request.time
+        && v.usuarioId is string && v.usuarioId == request.auth.uid
+        && (!('operadorNome' in v) || (v.operadorNome is string && v.operadorNome.size() > 0 && v.operadorNome.size() <= 100))
+        && (!('itensDevolvidos' in v) || (v.tipo == 'troca' && v.itensDevolvidos is list && v.itensDevolvidos.size() > 0));
     }
 
     // -----------------------------------------------------------------------
     // Restrições de Produtos
-    //
-    // getAfter() explica: lê o estado do documento APÓS toda a operação
-    // atômica (batch/transação) ser confirmada. Isso permite verificar que
-    // um documento de movimentação foi criado no MESMO batch que atualiza
-    // o estoque do produto — garantindo atomicidade e consistência.
-    //
-    // Estratégia: o batch cria primeiro /estoque/{movId} e depois atualiza
-    // /produtos/{prodId}. A regra de update do produto usa getAfter() para
-    // confirmar que a movimentação correspondente existe e é válida, e que
-    // o novo saldo é coerente (entrada soma, saída subtrai, nunca negativo).
     // -----------------------------------------------------------------------
     match /produtos/{produtoId} {
       allow read: if request.auth != null;
@@ -72,28 +92,21 @@ service cloud.firestore {
         && request.resource.data.criadoEm == request.time
         && request.resource.data.atualizadoEm == request.time;
 
-      // Edição de metadados (formulário): estoque não muda, criadoEm não muda.
-      // Edição de estoque: só via movimentação atômica (getAfter verifica o doc
-      // de estoque criado no mesmo batch e valida o saldo).
-      allow update: if request.auth != null && getPerfil() == 'gerente'
+      allow update: if request.auth != null
         && produtoValido(request.resource.data)
         && request.resource.data.criadoEm == resource.data.criadoEm
         && request.resource.data.atualizadoEm == request.time
         && (
-          // Caminho 1 — edição de metadados: estoque inalterado
-          request.resource.data.estoque == resource.data.estoque
-          ||
-          // Caminho 2 — atualização de estoque via movimentação atômica:
-          // deve existir em /estoque/{movId} um documento criado no mesmo batch
-          // com produtoId correto, tipo/quantidade coerentes com o novo saldo,
-          // usuarioId do utilizador logado e sem campos extras.
-          // O ID da movimentação é passado como segmento da rota via __movId
-          // (campo auxiliar temporário fora do schema de produto — não há campo
-          // extra porque produtoValido já rejeita qualquer chave fora da lista).
-          // Na prática, a SDK passa movId via campo auxiliar separado ao chamar
-          // a função registrarMovimentacao em estoque-db.ts.
+          // Caminho 1 — edição de metadados: apenas gerente, estoque inalterado
           (
-            request.resource.data.estoque != resource.data.estoque
+            getPerfil() == 'gerente'
+            && request.resource.data.estoque == resource.data.estoque
+          )
+          ||
+          // Caminho 2 — atualização de estoque via movimentação atômica manual do gerente:
+          (
+            getPerfil() == 'gerente'
+            && request.resource.data.estoque != resource.data.estoque
             && (
               // Verifica movimentação de entrada: saldo aumenta
               (
@@ -115,6 +128,19 @@ service cloud.firestore {
               )
             )
           )
+          ||
+          // Caminho 3 — abatimento ou incremento de estoque pelo funcionário no PDV (venda, troca ou devolução):
+          // Todos os metadados fixos permanecem inalterados e o saldo resultante nunca pode ser negativo.
+          (
+            getPerfil() == 'funcionario'
+            && request.resource.data.estoque != resource.data.estoque
+            && request.resource.data.estoque >= 0
+            && request.resource.data.nome == resource.data.nome
+            && request.resource.data.tamanho == resource.data.tamanho
+            && request.resource.data.cor == resource.data.cor
+            && request.resource.data.preco == resource.data.preco
+            && request.resource.data.categoria == resource.data.categoria
+          )
         );
 
       allow delete: if request.auth != null && getPerfil() == 'gerente';
@@ -124,16 +150,24 @@ service cloud.firestore {
     // Restrições de Estoque
     //
     // Movimentações são IMUTÁVEIS: apenas create é permitido (sem update/delete).
-    // Gerente: cria e consulta. Funcionário: apenas consulta (read-only).
+    // Gerente: cria movimentações manuais avulsas.
+    // Funcionário: cria movimentações associadas a uma venda válida com vendaId.
     // -----------------------------------------------------------------------
     match /estoque/{movId} {
-      // Gerente e funcionário lêem o histórico de movimentações
+      // Gerente e funcionário leem o histórico de movimentações
       allow read: if request.auth != null;
 
-      // Apenas gerente pode criar movimentações; campos exatos validados
+      // Criação de movimentações:
       allow create: if request.auth != null
-        && getPerfil() == 'gerente'
-        && movimentacaoValida(request.resource.data);
+        && movimentacaoValida(request.resource.data)
+        && (
+          getPerfil() == 'gerente'
+          || (
+            getPerfil() == 'funcionario'
+            && 'vendaId' in request.resource.data
+            && existsAfter(/databases/$(database)/documents/vendas/$(request.resource.data.vendaId))
+          )
+        );
 
       // Movimentações são imutáveis: update e delete sempre negados
       allow update: if false;
@@ -141,11 +175,18 @@ service cloud.firestore {
     }
 
     // -----------------------------------------------------------------------
-    // Restrições de Vendas
+    // Restrições de Vendas (RF05/RF06)
+    //
+    // - Criação: usuários autenticados (gerente ou funcionário) com payload
+    //   estritamente validado por vendaValida.
+    // - Leitura: restrita ao perfil gerente (conforme RF01 e PGP).
+    // - Imutabilidade: update e delete permanentemente bloqueados.
     // -----------------------------------------------------------------------
-    match /vendas/{venda} {
-      allow create: if request.auth != null;
-      allow read, update, delete: if request.auth != null && getPerfil() == 'gerente';
+    match /vendas/{vendaId} {
+      allow create: if request.auth != null && vendaValida(request.resource.data);
+      allow read: if request.auth != null && getPerfil() == 'gerente';
+      allow update: if false;
+      allow delete: if false;
     }
   }
 }

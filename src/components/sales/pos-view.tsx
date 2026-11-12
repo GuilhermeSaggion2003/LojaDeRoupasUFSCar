@@ -10,12 +10,14 @@ import {
   validateSale,
   type CartItem,
   type SaleItem,
+  type SaleReceiptData,
   type TransactionType,
 } from '../../lib/sales'
 import { describeSalesError, registrarVenda } from '../../lib/sales-db'
 import { CartList } from './cart-list'
 import { OrderSummary } from './order-summary'
 import { ProductSearch } from './product-search'
+import { SaleReceiptDialog } from './sale-receipt-dialog'
 
 export function PosView() {
   const { products, loading: productsLoading, error: productsError } = useProducts()
@@ -24,6 +26,7 @@ export function PosView() {
   const [type, setType] = useState<TransactionType>('venda')
   const [submitting, setSubmitting] = useState(false)
   const [notice, setNotice] = useState<{ tone: 'success' | 'error'; text: string } | null>(null)
+  const [receipt, setReceipt] = useState<SaleReceiptData | null>(null)
 
   const limitByStock = type !== 'devolucao'
 
@@ -98,6 +101,7 @@ export function PosView() {
           desconto: data.desconto,
           total: data.total,
           tipo: type,
+          operadorNome: nome || perfil || 'Operador Caixa',
         },
         uid,
       )
@@ -105,6 +109,17 @@ export function PosView() {
       const units = data.saleItems.reduce((sum, i) => sum + i.quantidade, 0)
       const label = TRANSACTION_TYPES.find((t) => t.value === type)?.label ?? 'Venda'
       const discountText = data.desconto > 0 ? ` (Desconto: ${formatCents(data.desconto)})` : ''
+
+      setReceipt({
+        id: saleId,
+        itens: data.saleItems,
+        subtotal: data.subtotal,
+        desconto: data.desconto,
+        total: data.total,
+        tipo: type,
+        data: new Date(),
+        operadorNome: nome || perfil || 'Operador Caixa',
+      })
 
       setNotice({
         tone: 'success',
@@ -121,6 +136,14 @@ export function PosView() {
 
   return (
     <div className="flex flex-col gap-6">
+      {/* Modal de Comprovante de Venda / Impressão */}
+      <SaleReceiptDialog
+        receipt={receipt}
+        onClose={() => {
+          setReceipt(null)
+          setNotice(null)
+        }}
+      />
       <header className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground md:text-3xl">
