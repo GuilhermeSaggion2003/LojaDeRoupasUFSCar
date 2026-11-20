@@ -3,7 +3,7 @@ import { signOut } from 'firebase/auth'
 import { auth } from '../../firebase' // Confirme se o caminho para o firebase.ts está correto
 import { cn } from '../../lib/utils'
 import { BrandMark } from './brand-mark'
-import { LOGOUT_ITEM, NAV_ITEMS } from './nav-items'
+import { LOGOUT_ITEM, navItemsFor } from './nav-items'
 
 interface MobileHeaderProps {
   nome?: string;
@@ -29,12 +29,12 @@ interface MobileNavProps {
   perfil: string | null;
 }
 
-export function MobileBottomNav(_props: MobileNavProps) {
+export function MobileBottomNav({ perfil }: MobileNavProps) {
   const { pathname } = useLocation()
   const navigate = useNavigate()
 
-  // Todos os itens de menu estão disponíveis para gerente e funcionário
-  const menuPermitido = NAV_ITEMS
+  // Relatórios aparecem apenas para o gerente
+  const menuPermitido = navItemsFor(perfil)
 
   const items = [...menuPermitido, LOGOUT_ITEM]
 
@@ -54,7 +54,7 @@ export function MobileBottomNav(_props: MobileNavProps) {
       aria-label="Navegação principal"
       className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md md:hidden"
     >
-      <ul className="grid grid-cols-4">
+      <ul className={cn('grid', items.length === 5 ? 'grid-cols-5' : 'grid-cols-4')}>
         {items.map((item) => {
           const isLogout = item === LOGOUT_ITEM
           const active = !isLogout && pathname.startsWith(item.href || '')

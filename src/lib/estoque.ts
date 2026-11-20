@@ -22,6 +22,8 @@ export type StockMovement = {
   /** Timestamp convertido para Date pelo observador do Firestore. */
   data: Date
   usuarioId: string
+  /** Presente quando a movimentação foi gerada por uma venda, troca ou devolução (PDV). */
+  vendaId?: string
 }
 
 /** Resultado de uma validação de movimentação. */

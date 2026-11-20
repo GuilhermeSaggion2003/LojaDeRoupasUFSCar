@@ -64,6 +64,8 @@ export function subscribeMovements(
           // Firestore retorna Timestamp; convertemos para Date.
           data: data.data instanceof Timestamp ? data.data.toDate() : new Date(),
           usuarioId: data.usuarioId as string,
+          // Vínculo com a transação do PDV (usado no relatório de movimentação, A8)
+          ...(typeof data.vendaId === 'string' ? { vendaId: data.vendaId } : {}),
         }
       })
       onData(movements)
