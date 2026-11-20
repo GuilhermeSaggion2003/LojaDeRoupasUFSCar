@@ -3,7 +3,7 @@ import { signOut } from 'firebase/auth'
 import { auth } from '../../firebase' // Confirme se o caminho para o firebase.ts está correto
 import { cn } from '../../lib/utils'
 import { BrandMark } from './brand-mark'
-import { LOGOUT_ITEM, NAV_ITEMS } from './nav-items'
+import { LOGOUT_ITEM, navItemsFor } from './nav-items'
 
 interface AppSidebarProps {
   perfil: string | null;
@@ -24,9 +24,9 @@ export function AppSidebar({ perfil, nome }: AppSidebarProps) {
     }
   }
 
-  // Todos os itens de menu estão disponíveis para gerente e funcionário
-  // (no estoque e catálogo de produtos, o funcionário opera em modo consulta).
-  const menuPermitido = NAV_ITEMS
+  // Produtos, Estoque e Vendas aparecem para os dois perfis (o funcionário opera
+  // em modo consulta no estoque e no catálogo); Relatórios apenas para o gerente.
+  const menuPermitido = navItemsFor(perfil)
 
   return (
     <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-sidebar-border bg-sidebar md:flex">
