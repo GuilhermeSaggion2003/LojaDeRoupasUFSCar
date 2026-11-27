@@ -11,8 +11,8 @@ export default defineConfig({
         // navegador entre publicações e download em paralelo).
         codeSplitting: {
           groups: [
-            { name: 'firebase', test: /node_modules[\/]@?firebase[\/]/ },
-            { name: 'react', test: /node_modules[\/](react|react-dom|react-router|react-router-dom|scheduler)[\/]/ },
+            { name: 'firebase', test: /node_modules[\\/]@?firebase[\\/]/ },
+            { name: 'react', test: /node_modules[\\/](react|react-dom|react-router|react-router-dom|scheduler)[\\/]/ },
           ],
         },
       },
