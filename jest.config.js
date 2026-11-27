@@ -7,6 +7,9 @@ export default {
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
   testMatch: ['**/*.test.ts'],
+  // src/firebase.ts usa import.meta.env (Vite) e inicializa o app real:
+  // nos testes ele é trocado por um stub sem efeitos colaterais.
+  moduleNameMapper: { '^\\.\\./firebase$': '<rootDir>/tests/support/firebase-stub.ts' },
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: 'tsconfig.test.json' }],
   },

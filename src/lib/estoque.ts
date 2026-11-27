@@ -111,6 +111,56 @@ export function calculateNewBalance(
 }
 
 // ---------------------------------------------------------------------------
+// Identificador versionado da movimentação (A9)
+// ---------------------------------------------------------------------------
+
+/**
+ * Monta o ID do documento de movimentação no formato
+ * `{produtoId}_{tipo}_{versão}`, em que a versão é o `atualizadoEm` do
+ * produto (em milissegundos) ANTES da escrita.
+ *
+ * Como toda escrita em `produtos` renova o `atualizadoEm`, cada versão do
+ * produto gera um ID novo: duas movimentações seguidas do mesmo tipo nunca
+ * colidem (o que antes transformava a segunda em *update*, negado pelas
+ * regras). As regras do Firestore remontam o mesmo ID a partir de
+ * `resource.data.atualizadoEm.toMillis()` para conferir, via getAfter(), que
+ * a alteração de saldo tem a movimentação correspondente. Um ID montado
+ * com uma versão antiga é recusado (trava otimista contra concorrência).
+ */
+export function buildMovementId(
+  produtoId: string,
+  tipo: MovementType,
+  versaoMillis: number,
+): string {
+  if (!produtoId) throw new Error('ID do produto obrigatório para a movimentação.')
+  if (tipo !== 'entrada' && tipo !== 'saida') {
+    throw new Error(`Tipo de movimentação inválido: ${String(tipo)}.`)
+  }
+  if (!Number.isSafeInteger(versaoMillis) || versaoMillis < 0) {
+    throw new Error('Versão do produto inválida: atualizadoEm ausente ou malformado.')
+  }
+  return `${produtoId}_${tipo}_${versaoMillis}`
+}
+
+/**
+ * Converte a variação líquida de saldo de um produto (positiva = entrada,
+ * negativa = saída) na movimentação que a registra. Retorna `null` quando
+ * a variação é zero (ex.: troca de uma peça por outra idêntica), caso em
+ * que nem o saldo nem o histórico precisam ser alterados.
+ */
+export function movementFromDelta(
+  netDelta: number,
+): { tipo: MovementType; quantidade: number } | null {
+  if (!Number.isInteger(netDelta)) {
+    throw new Error('A variação de estoque deve ser um número inteiro.')
+  }
+  if (netDelta === 0) return null
+  return netDelta > 0
+    ? { tipo: 'entrada', quantidade: netDelta }
+    : { tipo: 'saida', quantidade: -netDelta }
+}
+
+// ---------------------------------------------------------------------------
 // Classificação de nível de estoque
 // ---------------------------------------------------------------------------
 

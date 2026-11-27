@@ -83,6 +83,35 @@ service cloud.firestore {
     // Restrições de Produtos
     // -----------------------------------------------------------------------
     match /produtos/{produtoId} {
+      // ---------------------------------------------------------------------
+      // Alteração de saldo (A9): toda mudança do campo `estoque` precisa ter,
+      // na mesma transação/batch, a movimentação correspondente em `estoque`,
+      // com ID versionado `{produtoId}_{tipo}_{atualizadoEm em ms}`. A versão
+      // é o atualizadoEm ANTERIOR à escrita, que muda a cada atualização:
+      // movimentações seguidas nunca colidem e um ID com versão antiga é
+      // recusado (trava otimista contra concorrência).
+      // ---------------------------------------------------------------------
+      function metadadosInalterados() {
+        return request.resource.data.nome == resource.data.nome
+          && request.resource.data.tamanho == resource.data.tamanho
+          && request.resource.data.cor == resource.data.cor
+          && request.resource.data.preco == resource.data.preco
+          && request.resource.data.categoria == resource.data.categoria;
+      }
+
+      function movimentacaoCorrespondente() {
+        let anterior = resource.data.estoque;
+        let novo = request.resource.data.estoque;
+        let tipo = novo > anterior ? 'entrada' : 'saida';
+        let movId = produtoId + '_' + tipo + '_' + string(resource.data.atualizadoEm.toMillis());
+        let movPath = /databases/$(database)/documents/estoque/$(movId);
+        return novo >= 0
+          && existsAfter(movPath)
+          && getAfter(movPath).data.produtoId == produtoId
+          && getAfter(movPath).data.tipo == tipo
+          && getAfter(movPath).data.quantidade == math.abs(novo - anterior);
+      }
+
       allow read: if request.auth != null;
 
       // Produto nasce com estoque zero: entradas são registradas no módulo de Estoque.
@@ -103,43 +132,17 @@ service cloud.firestore {
             && request.resource.data.estoque == resource.data.estoque
           )
           ||
-          // Caminho 2 — atualização de estoque via movimentação atômica manual do gerente:
+          // Caminho 2 — alteração de saldo (movimentação avulsa do gerente ou
+          // venda/troca/devolução no PDV por qualquer perfil): metadados
+          // inalterados, saldo nunca negativo e movimentação versionada
+          // correspondente criada na mesma operação atômica. A criação da
+          // movimentação pelo funcionário continua exigindo vendaId de uma
+          // venda existente (ver /estoque).
           (
-            getPerfil() == 'gerente'
+            getPerfil() in ['gerente', 'funcionario']
             && request.resource.data.estoque != resource.data.estoque
-            && (
-              // Verifica movimentação de entrada: saldo aumenta
-              (
-                request.resource.data.estoque > resource.data.estoque
-                && existsAfter(/databases/$(database)/documents/estoque/$(produtoId + '_entrada'))
-                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_entrada')).data.produtoId == produtoId
-                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_entrada')).data.tipo == 'entrada'
-                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_entrada')).data.quantidade == (request.resource.data.estoque - resource.data.estoque)
-              )
-              ||
-              // Verifica movimentação de saída: saldo diminui, nunca negativo
-              (
-                request.resource.data.estoque < resource.data.estoque
-                && request.resource.data.estoque >= 0
-                && existsAfter(/databases/$(database)/documents/estoque/$(produtoId + '_saida'))
-                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_saida')).data.produtoId == produtoId
-                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_saida')).data.tipo == 'saida'
-                && getAfter(/databases/$(database)/documents/estoque/$(produtoId + '_saida')).data.quantidade == (resource.data.estoque - request.resource.data.estoque)
-              )
-            )
-          )
-          ||
-          // Caminho 3 — abatimento ou incremento de estoque pelo funcionário no PDV (venda, troca ou devolução):
-          // Todos os metadados fixos permanecem inalterados e o saldo resultante nunca pode ser negativo.
-          (
-            getPerfil() == 'funcionario'
-            && request.resource.data.estoque != resource.data.estoque
-            && request.resource.data.estoque >= 0
-            && request.resource.data.nome == resource.data.nome
-            && request.resource.data.tamanho == resource.data.tamanho
-            && request.resource.data.cor == resource.data.cor
-            && request.resource.data.preco == resource.data.preco
-            && request.resource.data.categoria == resource.data.categoria
+            && metadadosInalterados()
+            && movimentacaoCorrespondente()
           )
         );
 

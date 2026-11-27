@@ -20,6 +20,7 @@ import {
   type TransactionType,
 } from './sales'
 import { describeSalesError, InsufficientStockError } from './sales-db'
+import { MovementValidationError } from './estoque-db'
 import type { Product } from './products'
 
 // ---------------------------------------------------------------------------
@@ -338,6 +339,11 @@ describe('describeSalesError', () => {
     expect(describeSalesError(new Error('Falha'))).toBe(
       'Não foi possível concluir a transação de venda. Tente novamente.',
     )
+  })
+
+  it('repassa a mensagem de produto sem versão válida (MovementValidationError)', () => {
+    const err = new MovementValidationError('Produto sem data de atualização válida. Recarregue a página e tente novamente.')
+    expect(describeSalesError(err)).toBe(err.message)
   })
 
   it('retorna mensagem específica para InsufficientStockError', () => {

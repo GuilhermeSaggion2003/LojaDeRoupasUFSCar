@@ -6,6 +6,13 @@
  * 2. Atualização atômica do estoque de cada produto em `produtos`;
  * 3. Criação de registros de movimentação de auditoria na coleção `estoque`;
  * 4. Tratamento de concorrência com verificação prévia de saldo disponível.
+ *
+ * A9: cada produto envolvido gera UMA movimentação com a sua variação
+ * líquida (entrada ou saída) e ID versionado `{produtoId}_{tipo}_{versão}`,
+ * o mesmo formato das movimentações avulsas. Assim a regra de alteração de
+ * saldo é única para Gerente e Funcionário — o que corrige a venda pelo
+ * Gerente no PDV, antes bloqueada porque as regras procuravam
+ * `{produtoId}_saida` e o PDV gravava `{vendaId}_{produtoId}_saida`.
  */
 
 import {
@@ -17,10 +24,13 @@ import {
   runTransaction,
   serverTimestamp,
   Timestamp,
+  type DocumentReference,
   type Unsubscribe,
 } from 'firebase/firestore'
 import { FirebaseError } from 'firebase/app'
 import { db } from '../firebase'
+import { buildMovementId, movementFromDelta } from './estoque'
+import { MovementValidationError, productVersionMillis } from './estoque-db'
 import {
   calculateSaleStockDeltas,
   validateStockAvailability,
@@ -28,10 +38,6 @@ import {
   type SaleItem,
   type TransactionType,
 } from './sales'
-
-const vendasRef = collection(db, 'vendas')
-const produtosRef = collection(db, 'produtos')
-const estoqueRef = collection(db, 'estoque')
 
 /**
  * Erro específico lançado quando o estoque em banco não atende à quantidade
@@ -63,19 +69,23 @@ export async function registrarVenda(
     // 1. LEITURAS PREVENTIVAS (Firestore exige que todas as leituras precedam as escritas)
     // -------------------------------------------------------------------------
     const productDocsToUpdate: Array<{
-      ref: ReturnType<typeof doc>
+      ref: DocumentReference
+      produtoId: string
       novoEstoque: number
+      versao: number
+      netDelta: number
     }> = []
 
     for (const [prodId, delta] of stockDeltas.entries()) {
-      const prodRef = doc(produtosRef, prodId)
+      const prodRef = doc(db, 'produtos', prodId)
       const prodSnap = await transaction.get(prodRef)
 
       if (!prodSnap.exists()) {
         throw new Error(`Produto "${delta.nome}" (ID: ${prodId}) não encontrado.`)
       }
 
-      const currentStock = (prodSnap.data().estoque as number) ?? 0
+      const data = prodSnap.data()
+      const currentStock = (data.estoque as number) ?? 0
       const validation = validateStockAvailability(currentStock, delta)
 
       if (!validation.ok) {
@@ -84,7 +94,10 @@ export async function registrarVenda(
 
       productDocsToUpdate.push({
         ref: prodRef,
+        produtoId: prodId,
         novoEstoque: validation.novoEstoque,
+        versao: productVersionMillis(data),
+        netDelta: delta.netDelta,
       })
     }
 
@@ -92,7 +105,7 @@ export async function registrarVenda(
     // 2. ESCRITAS ATÔMICAS INDIVISÍVEIS
     // -------------------------------------------------------------------------
     // 2.1 Criação do documento da venda em `vendas`
-    const novaVendaRef = doc(vendasRef)
+    const novaVendaRef = doc(collection(db, 'vendas'))
     const salePayload: Record<string, unknown> = {
       itens: sale.itens,
       subtotal: sale.subtotal,
@@ -111,55 +124,26 @@ export async function registrarVenda(
 
     transaction.set(novaVendaRef, salePayload)
 
-    // 2.2 Atualização do estoque dos produtos em `produtos`
-    for (const { ref, novoEstoque } of productDocsToUpdate) {
+    // 2.2 Para cada produto: movimentação líquida versionada + novo saldo.
+    // Variação líquida zero (troca de uma peça por outra idêntica) não altera
+    // o saldo e não gera movimentação.
+    for (const { ref, produtoId, novoEstoque, versao, netDelta } of productDocsToUpdate) {
+      const movimento = movementFromDelta(netDelta)
+      if (!movimento) continue
+
+      transaction.set(doc(db, 'estoque', buildMovementId(produtoId, movimento.tipo, versao)), {
+        produtoId,
+        tipo: movimento.tipo,
+        quantidade: movimento.quantidade,
+        data: serverTimestamp(),
+        usuarioId,
+        vendaId: novaVendaRef.id,
+      })
+
       transaction.update(ref, {
         estoque: novoEstoque,
         atualizadoEm: serverTimestamp(),
       })
-    }
-
-    // 2.3 Criação dos registros de auditoria na coleção `estoque`
-    // Para saídas (itens vendidos ou saídos na troca)
-    if (sale.tipo === 'venda' || sale.tipo === 'troca') {
-      for (const item of sale.itens) {
-        const movDocRef = doc(estoqueRef, `${novaVendaRef.id}_${item.produtoId}_saida`)
-        transaction.set(movDocRef, {
-          produtoId: item.produtoId,
-          tipo: 'saida',
-          quantidade: item.quantidade,
-          data: serverTimestamp(),
-          usuarioId,
-          vendaId: novaVendaRef.id,
-        })
-      }
-    }
-
-    // Para entradas (itens devolvidos em devolução ou na troca)
-    if (sale.tipo === 'devolucao') {
-      for (const item of sale.itens) {
-        const movDocRef = doc(estoqueRef, `${novaVendaRef.id}_${item.produtoId}_entrada`)
-        transaction.set(movDocRef, {
-          produtoId: item.produtoId,
-          tipo: 'entrada',
-          quantidade: item.quantidade,
-          data: serverTimestamp(),
-          usuarioId,
-          vendaId: novaVendaRef.id,
-        })
-      }
-    } else if (sale.tipo === 'troca' && sale.itensDevolvidos) {
-      for (const item of sale.itensDevolvidos) {
-        const movDocRef = doc(estoqueRef, `${novaVendaRef.id}_${item.produtoId}_entrada`)
-        transaction.set(movDocRef, {
-          produtoId: item.produtoId,
-          tipo: 'entrada',
-          quantidade: item.quantidade,
-          data: serverTimestamp(),
-          usuarioId,
-          vendaId: novaVendaRef.id,
-        })
-      }
     }
 
     return novaVendaRef.id
@@ -170,7 +154,7 @@ export async function registrarVenda(
  * Converte erros do Firestore ou da transação em mensagens legíveis pelo operador de caixa.
  */
 export function describeSalesError(error: unknown): string {
-  if (error instanceof InsufficientStockError) {
+  if (error instanceof InsufficientStockError || error instanceof MovementValidationError) {
     return error.message
   }
 
@@ -202,7 +186,7 @@ export function subscribeSales(
   onData: (sales: Sale[]) => void,
   onError: (error: Error) => void,
 ): Unsubscribe {
-  const q = query(vendasRef, orderBy('data', 'desc'))
+  const q = query(collection(db, 'vendas'), orderBy('data', 'desc'))
 
   return onSnapshot(
     q,

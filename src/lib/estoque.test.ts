@@ -2,16 +2,19 @@ import { describe, expect, it } from '@jest/globals'
 import { FirebaseError } from 'firebase/app'
 import {
   LOW_STOCK_THRESHOLD,
+  buildMovementId,
   calculateNewBalance,
   classifyStockLevel,
   filterMovementsByCategory,
   filterProductsByCategory,
   formatMovementDate,
   listAlerts,
+  movementFromDelta,
   validateMovement,
   type StockMovement,
 } from './estoque'
-import { describeEstoqueError } from './estoque-db'
+import { Timestamp } from 'firebase/firestore'
+import { MovementValidationError, describeEstoqueError, productVersionMillis } from './estoque-db'
 import type { Category, Product } from './products'
 
 // ---------------------------------------------------------------------------
@@ -148,6 +151,65 @@ describe('calculateNewBalance', () => {
 // ---------------------------------------------------------------------------
 // Testes de classifyStockLevel
 // ---------------------------------------------------------------------------
+
+describe('buildMovementId (ID versionado, A9)', () => {
+  it('monta {produtoId}_{tipo}_{versão}', () => {
+    expect(buildMovementId('p1', 'entrada', 1764240000123)).toBe('p1_entrada_1764240000123')
+    expect(buildMovementId('p1', 'saida', 0)).toBe('p1_saida_0')
+  })
+
+  it('versões diferentes do mesmo produto geram IDs diferentes (sem colisão)', () => {
+    const primeira = buildMovementId('p1', 'entrada', 1000)
+    const segunda = buildMovementId('p1', 'entrada', 1001)
+    expect(primeira).not.toBe(segunda)
+  })
+
+  it('rejeita produto vazio', () => {
+    expect(() => buildMovementId('', 'entrada', 1)).toThrow('ID do produto obrigatório')
+  })
+
+  it('rejeita tipo desconhecido', () => {
+    expect(() => buildMovementId('p1', 'ajuste' as never, 1)).toThrow('Tipo de movimentação inválido')
+  })
+
+  it.each([NaN, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    'rejeita versão malformada (%p)',
+    (versao) => {
+      expect(() => buildMovementId('p1', 'saida', versao)).toThrow('Versão do produto inválida')
+    },
+  )
+})
+
+describe('productVersionMillis', () => {
+  it('converte atualizadoEm em milissegundos inteiros, truncando os microssegundos', () => {
+    // 1 s + 123,456789 ms → 1123 ms (o SDK daria 1123.456789 em toMillis())
+    expect(productVersionMillis({ atualizadoEm: new Timestamp(1, 123_456_789) })).toBe(1123)
+    expect(productVersionMillis({ atualizadoEm: Timestamp.fromMillis(0) })).toBe(0)
+  })
+
+  it('lança MovementValidationError quando atualizadoEm está ausente ou malformado', () => {
+    expect(() => productVersionMillis({})).toThrow(MovementValidationError)
+    expect(() => productVersionMillis({ atualizadoEm: '2026-11-27' })).toThrow(MovementValidationError)
+  })
+})
+
+describe('movementFromDelta', () => {
+  it('delta positivo vira entrada', () => {
+    expect(movementFromDelta(3)).toEqual({ tipo: 'entrada', quantidade: 3 })
+  })
+
+  it('delta negativo vira saída com quantidade positiva', () => {
+    expect(movementFromDelta(-2)).toEqual({ tipo: 'saida', quantidade: 2 })
+  })
+
+  it('delta zero não gera movimentação', () => {
+    expect(movementFromDelta(0)).toBeNull()
+  })
+
+  it('rejeita delta não inteiro', () => {
+    expect(() => movementFromDelta(1.5)).toThrow('número inteiro')
+  })
+})
 
 describe('classifyStockLevel', () => {
   it('classifica estoque zero como "Esgotado"', () => {
@@ -325,6 +387,12 @@ describe('describeEstoqueError', () => {
   ])('traduz FirebaseError "%s" para mensagem clara', (code, expected) => {
     const err = new FirebaseError(code, 'Firebase internal details')
     expect(describeEstoqueError(err)).toBe(expected)
+  })
+
+  it('repassa a mensagem de validação detectada na transação', () => {
+    expect(describeEstoqueError(new MovementValidationError('Saldo insuficiente. Estoque atual: 2 unidade(s).'))).toBe(
+      'Saldo insuficiente. Estoque atual: 2 unidade(s).',
+    )
   })
 
   it('retorna mensagem genérica para erros desconhecidos ou genéricos', () => {

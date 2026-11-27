@@ -27,3 +27,8 @@ dist-ssr
 coverage
 firebase-debug.log*
 firestore-debug.log*
+
+# Dados exportados dos emuladores (npm run emulators)
+emulator-data/
+ui-debug.log*
+auth-debug.log*

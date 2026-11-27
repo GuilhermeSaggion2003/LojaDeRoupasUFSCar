@@ -1,18 +1,18 @@
 /**
  * estoque-db.ts — Acesso ao Firestore para o módulo de Estoque.
  *
- * Padrão seguido: mesmo de products-db.ts (batch atômico, serverTimestamp,
- * onSnapshot, describeFirestoreError).
+ * Padrão seguido: mesmo de products-db.ts (serverTimestamp, onSnapshot,
+ * mensagens de erro amigáveis).
  *
- * Estratégia de atomicidade com as regras de segurança:
- *   O batch cria o documento de movimentação com ID determinístico
- *   `{produtoId}_{tipo}` e simultaneamente atualiza o campo `estoque` do
- *   produto. As regras usam getAfter() para verificar que a movimentação
- *   existe e é coerente no mesmo batch.
- *
- *   Limitação conhecida: apenas uma movimentação de cada tipo por produto
- *   por batch. Para lotes com múltiplos movimentos do mesmo tipo no mesmo
- *   produto, o chamador deve sequencializar as chamadas.
+ * Estratégia de atomicidade com as regras de segurança (revisada na A9):
+ *   Uma transação lê o produto, recalcula o saldo a partir do valor atual
+ *   do banco e grava, juntas, a movimentação e o novo saldo. O ID da
+ *   movimentação é versionado — `{produtoId}_{tipo}_{atualizadoEm em ms}`
+ *   (ver buildMovementId) — e as regras usam getAfter() para conferir que a
+ *   alteração de saldo tem a movimentação correspondente. Como a versão
+ *   muda a cada escrita, movimentações seguidas do mesmo tipo não colidem
+ *   (o ID fixo `{produtoId}_{tipo}` usado até a S8 fazia a segunda virar
+ *   update, negado pelas regras).
  */
 
 import {
@@ -21,21 +21,44 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   Timestamp,
-  writeBatch,
   type Unsubscribe,
 } from 'firebase/firestore'
 import { FirebaseError } from 'firebase/app'
 import { db } from '../firebase'
-import { type MovementType, type StockMovement } from './estoque'
+import {
+  buildMovementId,
+  calculateNewBalance,
+  validateMovement,
+  type MovementType,
+  type StockMovement,
+} from './estoque'
 
-// ---------------------------------------------------------------------------
-// Referências de coleção
-// ---------------------------------------------------------------------------
+/** Erro de validação de negócio detectado ao ler o saldo atual no banco. */
+export class MovementValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'MovementValidationError'
+  }
+}
 
-const estoqueRef = collection(db, 'estoque')
-const produtosRef = collection(db, 'produtos')
+/**
+ * Extrai a versão (atualizadoEm em ms) de um documento de produto.
+ * Lança erro se o campo estiver ausente: sem ele não é possível montar o ID
+ * versionado que as regras exigem.
+ */
+export function productVersionMillis(data: Record<string, unknown>): number {
+  const ts = data.atualizadoEm as { seconds?: unknown; nanoseconds?: unknown } | null | undefined
+  if (ts && typeof ts.seconds === 'number' && typeof ts.nanoseconds === 'number') {
+    // Timestamp.toMillis() do SDK web NÃO arredonda (o timestamp do servidor
+    // tem microssegundos e o resultado sairia fracionário). As regras usam
+    // toMillis() inteiro, então truncamos os nanossegundos aqui também.
+    return ts.seconds * 1000 + Math.floor(ts.nanoseconds / 1_000_000)
+  }
+  throw new MovementValidationError('Produto sem data de atualização válida. Recarregue a página e tente novamente.')
+}
 
 // ---------------------------------------------------------------------------
 // Leitura em tempo real
@@ -49,7 +72,7 @@ export function subscribeMovements(
   onData: (movements: StockMovement[]) => void,
   onError: (error: Error) => void,
 ): Unsubscribe {
-  const q = query(estoqueRef, orderBy('data', 'desc'))
+  const q = query(collection(db, 'estoque'), orderBy('data', 'desc'))
 
   return onSnapshot(
     q,
@@ -79,44 +102,57 @@ export function subscribeMovements(
 // ---------------------------------------------------------------------------
 
 /**
- * Registra uma movimentação de estoque e atualiza o campo `estoque` do
- * produto em um batch atômico.
+ * Registra uma movimentação avulsa de estoque (RF04) e atualiza o saldo do
+ * produto numa transação atômica.
+ *
+ * O saldo é recalculado a partir do valor ATUAL do banco (não do que a tela
+ * exibia), evitando sobrescrever movimentações concorrentes.
  *
  * @param produtoId   ID do produto no Firestore
  * @param tipo        'entrada' | 'saida'
  * @param quantidade  Inteiro positivo
- * @param novoEstoque Saldo calculado pelo cliente (validate + calculateNewBalance)
  * @param usuarioId   UID do utilizador autenticado (request.auth.uid)
- *
- * O ID do documento de movimentação segue o padrão `{produtoId}_{tipo}`
- * exigido pelas regras de segurança para o uso de getAfter().
+ * @returns O novo saldo gravado
  */
 export async function registrarMovimentacao(
   produtoId: string,
   tipo: MovementType,
   quantidade: number,
-  novoEstoque: number,
   usuarioId: string,
-): Promise<void> {
-  const movId = `${produtoId}_${tipo}`
-  const batch = writeBatch(db)
+): Promise<number> {
+  const produtoRef = doc(db, 'produtos', produtoId)
 
-  // 1. Cria o documento de movimentação com ID determinístico
-  batch.set(doc(estoqueRef, movId), {
-    produtoId,
-    tipo,
-    quantidade,
-    data: serverTimestamp(),
-    usuarioId,
+  return await runTransaction(db, async (transaction) => {
+    const snap = await transaction.get(produtoRef)
+    if (!snap.exists()) {
+      throw new MovementValidationError('Produto não encontrado. Pode ter sido excluído.')
+    }
+
+    const data = snap.data()
+    const estoqueAtual = typeof data.estoque === 'number' ? data.estoque : 0
+    const validation = validateMovement(produtoId, tipo, quantidade, estoqueAtual)
+    if (!validation.ok) throw new MovementValidationError(validation.error)
+
+    const novoEstoque = calculateNewBalance(estoqueAtual, tipo, quantidade)
+    const movId = buildMovementId(produtoId, tipo, productVersionMillis(data))
+
+    // 1. Cria a movimentação com ID versionado (nunca colide com uma anterior)
+    transaction.set(doc(db, 'estoque', movId), {
+      produtoId,
+      tipo,
+      quantidade,
+      data: serverTimestamp(),
+      usuarioId,
+    })
+
+    // 2. Atualiza o saldo do produto (validado pela regra via getAfter)
+    transaction.update(produtoRef, {
+      estoque: novoEstoque,
+      atualizadoEm: serverTimestamp(),
+    })
+
+    return novoEstoque
   })
-
-  // 2. Atualiza o estoque do produto (validado pela regra via getAfter)
-  batch.update(doc(produtosRef, produtoId), {
-    estoque: novoEstoque,
-    atualizadoEm: serverTimestamp(),
-  })
-
-  await batch.commit()
 }
 
 // ---------------------------------------------------------------------------
@@ -125,6 +161,9 @@ export async function registrarMovimentacao(
 
 /** Converte erros do Firestore em mensagens legíveis pelo utilizador. */
 export function describeEstoqueError(error: unknown): string {
+  if (error instanceof MovementValidationError) {
+    return error.message
+  }
   if (error instanceof FirebaseError) {
     switch (error.code) {
       case 'permission-denied':
