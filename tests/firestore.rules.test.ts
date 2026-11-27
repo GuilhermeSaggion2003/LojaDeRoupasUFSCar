@@ -3,7 +3,7 @@
  * Rodar com: npm run test:rules (sobe o emulador do Firestore automaticamente).
  */
 import { readFileSync } from 'node:fs'
-import { afterAll, beforeAll, beforeEach, describe, it } from '@jest/globals'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from '@jest/globals'
 import {
   assertFails,
   assertSucceeds,
@@ -200,8 +200,8 @@ describe('produtos: atualização de estoque via movimentação atômica', () =>
     // Estoque atual: 10 → novo estoque: 15
     const db = gerente()
     const batch = writeBatch(db)
-    // O ID da movimentação segue o padrão {produtoId}_{tipo} para a regra usar getAfter
-    batch.set(doc(db, 'estoque/p1_entrada'), {
+    // ID versionado {produtoId}_{tipo}_{atualizadoEm em ms}; p1 foi semeado com atualizadoEm = 0
+    batch.set(doc(db, 'estoque/p1_entrada_0'), {
       produtoId: 'p1',
       tipo: 'entrada',
       quantidade: 5,
@@ -220,7 +220,7 @@ describe('produtos: atualização de estoque via movimentação atômica', () =>
     // Estoque atual: 10 → novo estoque: 7
     const db = gerente()
     const batch = writeBatch(db)
-    batch.set(doc(db, 'estoque/p1_saida'), {
+    batch.set(doc(db, 'estoque/p1_saida_0'), {
       produtoId: 'p1',
       tipo: 'saida',
       quantidade: 3,
@@ -239,7 +239,7 @@ describe('produtos: atualização de estoque via movimentação atômica', () =>
     // Movimentação diz 5 mas produto tenta ir de 10 para 20 (diferença 10)
     const db = gerente()
     const batch = writeBatch(db)
-    batch.set(doc(db, 'estoque/p1_entrada'), {
+    batch.set(doc(db, 'estoque/p1_entrada_0'), {
       produtoId: 'p1',
       tipo: 'entrada',
       quantidade: 5,
@@ -258,7 +258,7 @@ describe('produtos: atualização de estoque via movimentação atômica', () =>
     // Movimentação diz 3 mas produto tenta ir de 10 para 5 (diferença 5)
     const db = gerente()
     const batch = writeBatch(db)
-    batch.set(doc(db, 'estoque/p1_saida'), {
+    batch.set(doc(db, 'estoque/p1_saida_0'), {
       produtoId: 'p1',
       tipo: 'saida',
       quantidade: 3,
@@ -277,7 +277,7 @@ describe('produtos: atualização de estoque via movimentação atômica', () =>
     // Estoque atual: 10, tentativa de saída de 15 (resultado: -5)
     const db = gerente()
     const batch = writeBatch(db)
-    batch.set(doc(db, 'estoque/p1_saida'), {
+    batch.set(doc(db, 'estoque/p1_saida_0'), {
       produtoId: 'p1',
       tipo: 'saida',
       quantidade: 15,
@@ -307,7 +307,7 @@ describe('produtos: atualização de estoque via movimentação atômica', () =>
     // Movimentação aponta para 'p2' mas update é em 'p1'
     const db = gerente()
     const batch = writeBatch(db)
-    batch.set(doc(db, 'estoque/p1_entrada'), {
+    batch.set(doc(db, 'estoque/p1_entrada_0'), {
       produtoId: 'p2', // ID errado!
       tipo: 'entrada',
       quantidade: 5,
@@ -626,7 +626,8 @@ describe('vendas e estoque: abatimento pelo funcionário em transação de venda
       atualizadoEm: serverTimestamp(),
     })
 
-    batch.set(doc(db, `estoque/${novaVendaRef.id}_p1_saida`), {
+    // ID versionado (A9): {produtoId}_{tipo}_{atualizadoEm em ms}
+    batch.set(doc(db, 'estoque/p1_saida_0'), {
       produtoId: 'p1',
       tipo: 'saida',
       quantidade: 2,
@@ -655,4 +656,128 @@ describe('vendas e estoque: abatimento pelo funcionário em transação de venda
   })
 })
 
+// ---------------------------------------------------------------------------
+// A9 — correções: ID versionado e regra única de alteração de saldo
+// ---------------------------------------------------------------------------
 
+/** Lê a versão atual (atualizadoEm em ms) do produto, ignorando as regras. */
+async function versaoDe(produtoId: string): Promise<number> {
+  let versao = -1
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    const snap = await getDoc(doc(ctx.firestore(), `produtos/${produtoId}`))
+    const ts = snap.data()!.atualizadoEm as Timestamp
+    // Mesmo cálculo de productVersionMillis (estoque-db.ts): ms inteiros
+    versao = ts.seconds * 1000 + Math.floor(ts.nanoseconds / 1_000_000)
+  })
+  return versao
+}
+
+/** Batch de movimentação avulsa do gerente: movimentação versionada + novo saldo. */
+function movimentacaoGerente(tipo: 'entrada' | 'saida', quantidade: number, novoEstoque: number, versao: number) {
+  const db = gerente()
+  const batch = writeBatch(db)
+  batch.set(doc(db, `estoque/p1_${tipo}_${versao}`), movimentacao(tipo, quantidade))
+  batch.update(doc(db, 'produtos/p1'), { estoque: novoEstoque, atualizadoEm: serverTimestamp() })
+  return batch.commit()
+}
+
+describe('A9: movimentações seguidas com ID versionado', () => {
+  it('gerente registra duas entradas seguidas do mesmo produto (antes a 2ª era negada)', async () => {
+    await assertSucceeds(movimentacaoGerente('entrada', 5, 15, await versaoDe('p1')))
+    const novaVersao = await versaoDe('p1')
+    expect(novaVersao).toBeGreaterThan(0)
+    await assertSucceeds(movimentacaoGerente('entrada', 2, 17, novaVersao))
+  })
+
+  it('bloqueia movimentação montada com a versão antiga do produto (trava otimista)', async () => {
+    await assertSucceeds(movimentacaoGerente('entrada', 5, 15, 0))
+    // A versão 0 já foi consumida: uma saída com ela não corresponde ao produto atual
+    await assertFails(movimentacaoGerente('saida', 3, 12, 0))
+  })
+
+  it('bloqueia reaproveitar o ID fixo antigo {produtoId}_{tipo}', async () => {
+    const db = gerente()
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'estoque/p1_entrada'), movimentacao('entrada', 5))
+    batch.update(doc(db, 'produtos/p1'), { estoque: 15, atualizadoEm: serverTimestamp() })
+    await assertFails(batch.commit())
+  })
+
+  it('bloqueia gerente alterando preço junto com o saldo', async () => {
+    const db = gerente()
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'estoque/p1_entrada_0'), movimentacao('entrada', 5))
+    batch.update(doc(db, 'produtos/p1'), { estoque: 15, preco: 1, atualizadoEm: serverTimestamp() })
+    await assertFails(batch.commit())
+  })
+})
+
+describe('A9: venda no PDV com a regra única de saldo', () => {
+  it('gerente finaliza venda no PDV (antes era negado)', async () => {
+    const db = gerente()
+    const batch = writeBatch(db)
+    const vendaRef = doc(collection(db, 'vendas'))
+    batch.set(vendaRef, vendaValida('gerente-uid'))
+    batch.set(doc(db, 'estoque/p1_saida_0'), { ...movimentacao('saida', 2), vendaId: vendaRef.id })
+    batch.update(doc(db, 'produtos/p1'), { estoque: 8, atualizadoEm: serverTimestamp() })
+    await assertSucceeds(batch.commit())
+  })
+
+  it('funcionário registra devolução (entrada) vinculada à venda', async () => {
+    const db = funcionario()
+    const batch = writeBatch(db)
+    const vendaRef = doc(collection(db, 'vendas'))
+    batch.set(vendaRef, vendaValida('funcionario-uid', { tipo: 'devolucao', desconto: 0, total: 11980 }))
+    batch.set(doc(db, 'estoque/p1_entrada_0'), {
+      ...movimentacao('entrada', 2),
+      usuarioId: 'funcionario-uid',
+      vendaId: vendaRef.id,
+    })
+    batch.update(doc(db, 'produtos/p1'), { estoque: 12, atualizadoEm: serverTimestamp() })
+    await assertSucceeds(batch.commit())
+  })
+
+  it('bloqueia funcionário alterando saldo sem movimentação (brecha fechada na A9)', async () => {
+    const db = funcionario()
+    const batch = writeBatch(db)
+    batch.set(doc(collection(db, 'vendas')), vendaValida('funcionario-uid'))
+    batch.update(doc(db, 'produtos/p1'), { estoque: 8, atualizadoEm: serverTimestamp() })
+    await assertFails(batch.commit())
+  })
+
+  it('bloqueia funcionário com movimentação de quantidade diferente da venda', async () => {
+    const db = funcionario()
+    const batch = writeBatch(db)
+    const vendaRef = doc(collection(db, 'vendas'))
+    batch.set(vendaRef, vendaValida('funcionario-uid'))
+    batch.set(doc(db, 'estoque/p1_saida_0'), {
+      ...movimentacao('saida', 1),
+      usuarioId: 'funcionario-uid',
+      vendaId: vendaRef.id,
+    })
+    batch.update(doc(db, 'produtos/p1'), { estoque: 8, atualizadoEm: serverTimestamp() })
+    await assertFails(batch.commit())
+  })
+
+  it('bloqueia funcionário alterando metadados junto com o saldo', async () => {
+    const db = funcionario()
+    const batch = writeBatch(db)
+    const vendaRef = doc(collection(db, 'vendas'))
+    batch.set(vendaRef, vendaValida('funcionario-uid'))
+    batch.set(doc(db, 'estoque/p1_saida_0'), {
+      ...movimentacao('saida', 2),
+      usuarioId: 'funcionario-uid',
+      vendaId: vendaRef.id,
+    })
+    batch.update(doc(db, 'produtos/p1'), { estoque: 8, nome: 'Outro nome', atualizadoEm: serverTimestamp() })
+    await assertFails(batch.commit())
+  })
+
+  it('bloqueia funcionário com movimentação avulsa (sem vendaId) para alterar o saldo', async () => {
+    const db = funcionario()
+    const batch = writeBatch(db)
+    batch.set(doc(db, 'estoque/p1_entrada_0'), { ...movimentacao('entrada', 5), usuarioId: 'funcionario-uid' })
+    batch.update(doc(db, 'produtos/p1'), { estoque: 15, atualizadoEm: serverTimestamp() })
+    await assertFails(batch.commit())
+  })
+})

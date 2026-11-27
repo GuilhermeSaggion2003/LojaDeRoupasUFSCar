@@ -20,7 +20,9 @@ import {
   type ProductInput,
 } from './products'
 
-const produtosRef = collection(db, 'produtos')
+// A referência é criada dentro de cada função (e não no carregamento do
+// módulo) para que os testes de integração possam apontar `db` ao emulador.
+const produtosRef = () => collection(db, 'produtos')
 
 /** Escuta a coleção "produtos" em tempo real. Retorna a função para cancelar. */
 export function subscribeProducts(
@@ -28,7 +30,7 @@ export function subscribeProducts(
   onError: (error: Error) => void,
 ) {
   return onSnapshot(
-    produtosRef,
+    produtosRef(),
     (snapshot) => {
       const products = snapshot.docs.flatMap((d) => {
         const product = productFromDoc(d.id, d.data())
@@ -43,7 +45,7 @@ export function subscribeProducts(
 
 // O produto nasce com estoque zero; entradas são registradas no módulo de Estoque.
 export async function createProduct(input: ProductInput) {
-  const ref = await addDoc(produtosRef, {
+  const ref = await addDoc(produtosRef(), {
     ...productInputToDoc(input),
     estoque: 0,
     criadoEm: serverTimestamp(),
@@ -68,7 +70,7 @@ export async function deleteProduct(id: string) {
 export async function seedSampleProducts() {
   const batch = writeBatch(db)
   for (const p of INITIAL_PRODUCTS) {
-    batch.set(doc(produtosRef), {
+    batch.set(doc(produtosRef()), {
       nome: p.name,
       tamanho: p.size,
       cor: p.color,

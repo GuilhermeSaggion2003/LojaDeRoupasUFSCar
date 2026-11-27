@@ -2,11 +2,7 @@ import { useState } from 'react'
 import { ArrowDownLeft, ArrowUpRight, CheckCircle2, AlertCircle, Loader2, Minus, Plus } from 'lucide-react'
 import { Button } from '../ui/button'
 import type { Product } from '../../lib/products'
-import {
-  calculateNewBalance,
-  validateMovement,
-  type MovementType,
-} from '../../lib/estoque'
+import { validateMovement, type MovementType } from '../../lib/estoque'
 import { describeEstoqueError, registrarMovimentacao } from '../../lib/estoque-db'
 import { auth } from '../../firebase'
 import { cn } from '../../lib/utils'
@@ -92,13 +88,11 @@ export function MovementForm({ products, preSelectedProduct, onMovementSuccess }
         throw new Error('Sessão expirada. Faça login novamente.')
       }
 
-      const novoSaldo = calculateNewBalance(currentProduct.stock, type, qty)
-
-      await registrarMovimentacao(
+      // O saldo é recalculado na transação a partir do valor atual do banco
+      const novoSaldo = await registrarMovimentacao(
         currentProduct.id,
         type,
         qty,
-        novoSaldo,
         uid,
       )
 

@@ -5,13 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:emulators": "vite --mode emulator",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
     "tw": "tailwindcss init -p",
     "test": "jest",
     "test:coverage": "jest --coverage",
-    "test:rules": "firebase emulators:exec --only firestore --project demo-lojaderoupasufscar \"node_modules\\.bin\\jest.cmd -c jest.rules.config.js\""
+    "test:rules": "firebase emulators:exec --only firestore --project demo-lojaderoupasufscar \"npx jest -c jest.rules.config.js\"",
+    "test:integration": "firebase emulators:exec --only firestore --project demo-lojaderoupasufscar \"npx jest -c jest.integration.config.js\"",
+    "emulators": "firebase emulators:start --only auth,firestore --project demo-lojaderoupasufscar --export-on-exit ./emulator-data",
+    "emulators:salvos": "firebase emulators:start --only auth,firestore --project demo-lojaderoupasufscar --import ./emulator-data --export-on-exit",
+    "seed:emulators": "node scripts/seed-emulators.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -41,6 +46,7 @@
     "firebase-tools": "^15.34.2",
     "globals": "^17.13.0",
     "jest": "^29.7.0",
+    "jest-util": "^29.7.0",
     "postcss": "^8.5.32",
     "tailwindcss": "^4.3.3",
     "ts-jest": "^29.4.15",
